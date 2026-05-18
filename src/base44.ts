@@ -189,6 +189,12 @@ export interface ScannableEntity {
   created_date: string;
 }
 
+/** Sort order used for the cursor-paginated scan. Hard-coded because the
+ *  cursor logic (`{ created_date: { $gt: cursor } }` + ascending order) only
+ *  works correctly with `created_date` ASC; exposing a `sortBy` option would
+ *  invite a footgun. */
+const SCAN_SORT_BY = 'created_date';
+
 /** Inputs for {@link chunkedEntityScan}. */
 export interface ChunkedEntityScanOptions<T extends ScannableEntity> {
   /** Service-role entity client — e.g. `base44.asServiceRole.entities.Lead`.
@@ -218,10 +224,6 @@ export interface ChunkedEntityScanOptions<T extends ScannableEntity> {
   chunkSize?: number;
   /** Max rows fetched per Base44 page. Defaults to 500. */
   pageSize?: number;
-  /** Sort order argument passed to `list` / `filter`. Defaults to
-   *  `'created_date'` (ascending). Always ascending so the cursor strictly
-   *  advances. */
-  sortBy?: string;
   /** Label for {@link withRetry}'s deadline error message. */
   label?: string;
 }
@@ -254,6 +256,10 @@ export interface ChunkedEntityScanResult {
  * Base44 entity client and a `processItem` callback; this function handles
  * pagination, the time-budget bail-out, the cursor-advancement edge cases
  * (slice exhausted vs. mid-slice deadline-hit), and the status determination.
+ *
+ * Sort order is always `created_date` ascending — see {@link SCAN_SORT_BY}.
+ * The cursor filter (`{ created_date: { $gt: cursor } }`) only works with
+ * this order, so the sort key is not configurable.
  *
  * Typical usage:
  *
@@ -294,19 +300,18 @@ export async function chunkedEntityScan<T extends ScannableEntity>(
     processItem,
     chunkSize = 200,
     pageSize = 500,
-    sortBy = 'created_date',
     label = 'chunkedEntityScan',
   } = options;
 
   const page: T[] = cursor
     ? await withRetry(
         state,
-        () => entity.filter({ created_date: { $gt: cursor } }, sortBy, pageSize),
+        () => entity.filter({ created_date: { $gt: cursor } }, SCAN_SORT_BY, pageSize),
         `${label} entity.filter`,
       )
     : await withRetry(
         state,
-        () => entity.list(sortBy, pageSize),
+        () => entity.list(SCAN_SORT_BY, pageSize),
         `${label} entity.list`,
       );
 

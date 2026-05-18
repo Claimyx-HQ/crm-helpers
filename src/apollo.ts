@@ -43,13 +43,15 @@ export const DEFAULT_DISCOVERY_TITLES: readonly string[] = [
 
 /**
  * Caps on raw array fields stored alongside a Company row. Enforced by the
- * extractors below so accounts with long histories don't blow row size past
- * the 50KB target. Tune here if a downstream consumer needs more depth.
+ * extractors / mappers below so accounts with long histories don't blow row
+ * size past the 50KB target. Tune here if a downstream consumer needs more
+ * depth.
  */
 export const FUNDING_EVENTS_CAP = 10;
 export const JOB_POSTINGS_CAP = 10;
 export const NEWS_ARTICLES_CAP = 5;
 export const HEADCOUNT_CHART_CAP = 36; // 3y of monthly points
+export const CURRENT_TECHNOLOGIES_CAP = 30; // ~3 categories × 10 entries
 
 // ---------------------------------------------------------------------------
 // Apollo HTTP
@@ -352,9 +354,6 @@ export function extractJobPostings(
       url: p?.url || '',
       posted_at: p?.posted_at || p?.date || '',
     };
-    // Skip rows where every key field is empty. Apollo occasionally
-    // returns placeholder objects from accounts with stale ATS hookups;
-    // those would otherwise crowd out real postings against the cap.
     if (!entry.title && !entry.location && !entry.url && !entry.posted_at) continue;
     out.push(entry);
   }
@@ -926,6 +925,9 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   const orgLocations = buildOrganizationLocations(org.organization_locations);
   const phoneNumbers = buildCompanyPhoneNumbers(account, org);
   const primaryPhoneStructured = buildPrimaryPhone(phoneNumbers);
+  // Cap `current_technologies` to keep Company row size under the 50KB
+  // target — a few accounts (e.g. enterprise SaaS targets) return hundreds
+  // of tech entries that would otherwise blow the budget.
   const currentTechnologies = Array.isArray(org.current_technologies)
     ? org.current_technologies
         .map((t) => ({
@@ -934,6 +936,7 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
           first_seen: t?.first_seen || '',
         }))
         .filter((t) => t.name)
+        .slice(0, CURRENT_TECHNOLOGIES_CAP)
     : [];
 
   const out: NormalizedCompany = {
@@ -1025,9 +1028,6 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
     headcount_chart: headcountChart,
     organization_locations: orgLocations,
     phone_numbers: phoneNumbers,
-    // Reject arrays (and null) before accepting an Apollo object as a
-    // Record<...> — otherwise an unexpected array payload would type-pass
-    // `typeof === 'object'` and break consumers expecting key/value reads.
     departmental_head_count: isPlainRecord(org.departmental_head_count)
       ? (org.departmental_head_count as Record<string, number>)
       : {},
@@ -1119,10 +1119,7 @@ export function normalizeContact(
   const emailStatus = normalizeEmailStatus(contact.email_status);
   const phoneNumbers = derivePhoneNumbers(contact.phone_numbers);
   // Use pickPrimary so the legacy `phone` field consistently mirrors the
-  // same entry `phone_status` is derived from. `derivePhoneNumbers` marks
-  // primary in place rather than reordering, so `phoneNumbers[0]` is NOT
-  // necessarily the primary — that would drift `phone` and `phone_status`
-  // apart on Apollo payloads where the primary isn't the first entry.
+  // same entry `phone_status` is derived from.
   const fallbackPhone =
     pickPrimary(phoneNumbers)?.number ||
     contact.phone_numbers?.[0]?.raw_number ||
@@ -1210,9 +1207,7 @@ export function normalizeContact(
     apollo_original_source: contact.apollo_original_source || contact.original_source || '',
   };
 
-  // Optional numerics: same finite-gate as normalizeAccount above so an
-  // Apollo `""` doesn't get persisted as a real 0 / NaN for engagement-
-  // prediction or intent fields.
+  // Optional numerics: same finite-gate as normalizeAccount above.
   const followersCount = finiteNumber(contact.linkedin_followers_count);
   if (followersCount !== undefined) out.linkedin_followers_count = followersCount;
   const extrapolatedConfidence = finiteNumber(contact.extrapolated_email_confidence);
