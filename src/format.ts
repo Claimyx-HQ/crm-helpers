@@ -72,13 +72,17 @@ const YYYY_MM = /^(\d{4})-(\d{2})$/;
 
 /**
  * Format a `YYYY-MM` month string as a short label (e.g. `Apr 2025`). Returns
- * the original input unchanged when it can't be parsed as a valid year-month
- * (months outside 1–12, alpha characters, wrong shape), and an empty string
- * when the input is empty.
+ * an empty string for empty / whitespace / null / undefined inputs, and the
+ * original (trimmed) input unchanged when it can't be parsed as a valid
+ * year-month (months outside 1–12, alpha characters, wrong shape).
  */
 export function formatMonth(ym: string | null | undefined): string {
   if (!ym) return '';
-  const s = String(ym);
+  // Trim before the empty check so callers passing `'   '` (e.g. an Apollo
+  // payload with a whitespace-padded month) get the same empty-string
+  // result as a true empty input — matches `isEmptyForFormat` semantics.
+  const s = String(ym).trim();
+  if (!s) return '';
   const match = YYYY_MM.exec(s);
   if (!match) return s;
   const year = Number(match[1]);

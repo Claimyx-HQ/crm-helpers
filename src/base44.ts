@@ -177,11 +177,16 @@ export function chainingEnabled(): boolean {
 // Chunked entity scan
 // ---------------------------------------------------------------------------
 
-/** Row shape accepted by {@link chunkedEntityScan}. Base44 entities always
- *  carry `id` + `created_date`; the latter is the immutable cursor field. */
+/**
+ * Row shape accepted by {@link chunkedEntityScan}. Both fields are required:
+ * `id` is the row identifier; `created_date` is the immutable cursor used
+ * to advance pagination across chunks. The type signature enforces this so
+ * callers can't accidentally pass an entity without `created_date` and end
+ * up stalling the cursor (which would re-scan the same page indefinitely).
+ */
 export interface ScannableEntity {
   id: string;
-  created_date?: string;
+  created_date: string;
 }
 
 /** Inputs for {@link chunkedEntityScan}. */
@@ -232,7 +237,10 @@ export interface ChunkedEntityScanResult {
   processed: number;
   /** Rows still left in the current page after the slice cut. */
   remaining_in_page: number;
-  /** True if either more rows remain in this page or the page was full. */
+  /** True whenever there's more work to do — either rows remain unscanned
+   *  in this page (chunkSize cap or time-budget bail-out), or the fetch
+   *  came back full so another page certainly exists. False only when the
+   *  scan is genuinely caught up at the cursor's tail. */
   more_pages_likely: boolean;
   /** Cursor for the next invocation. */
   next_cursor: string;
@@ -345,12 +353,18 @@ export async function chunkedEntityScan<T extends ScannableEntity>(
   const sliceCoveredPage = slice.length >= page.length;
   if (sliceExhausted && sliceCoveredPage && page.length > 0) {
     const last = page[page.length - 1];
-    if (last?.created_date) lastProcessedCreatedDate = last.created_date;
+    if (last && last.created_date) lastProcessedCreatedDate = last.created_date;
   }
 
-  const morePagesLikely = page.length >= pageSize || page.length > slice.length;
-  const completed = sliceExhausted && !morePagesLikely;
+  // Compute remaining first so `morePagesLikely` can use it. The previous
+  // formula (`page.length >= pageSize || page.length > slice.length`)
+  // missed the time-budget mid-slice case: when the loop bails early
+  // inside the slice, the page was a partial fetch (page.length < pageSize)
+  // AND the chunkSize cap didn't apply (page.length === slice.length),
+  // so both legs were false even though work remained.
   const remainingInPage = Math.max(0, page.length - processedCount);
+  const morePagesLikely = remainingInPage > 0 || page.length >= pageSize;
+  const completed = sliceExhausted && !morePagesLikely;
 
   return {
     status: completed ? 'completed' : 'in_progress',
