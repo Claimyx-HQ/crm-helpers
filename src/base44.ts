@@ -289,7 +289,6 @@ export async function chunkedEntityScan<T extends ScannableEntity>(
     sortBy = 'created_date',
     label = 'chunkedEntityScan',
   } = options;
-  const chunkStartedAt = Date.now();
 
   const page: T[] = cursor
     ? await withRetry(
@@ -321,7 +320,10 @@ export async function chunkedEntityScan<T extends ScannableEntity>(
   const counts = { processed: 0, skipped: 0, failures: 0 };
 
   for (const item of slice) {
-    if (Date.now() - chunkStartedAt > state.chunkDeadline - chunkStartedAt) {
+    // Simple absolute-time deadline check — reuses the same `chunkDeadline`
+    // value `withRetry` consults, so this loop's bail-out aligns with the
+    // retry helper's deadline error.
+    if (Date.now() > state.chunkDeadline) {
       timeBudgetHit = true;
       break;
     }

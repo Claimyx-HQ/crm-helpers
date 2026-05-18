@@ -2,14 +2,25 @@
 // subcomponents (and anywhere else that renders these primitives) so a tweak
 // to the format propagates everywhere at once.
 
+// True when the input is the kind of "absent" we want to render as empty.
+// `Number('')` is 0, which is finite, so a bare `Number.isFinite(Number(x))`
+// check wouldn't catch empty/whitespace strings (callers in the CRM see
+// these all the time when Apollo returns a missing field as `""`).
+function isEmptyForFormat(v: number | string | null | undefined): boolean {
+  if (v == null) return true;
+  if (typeof v === 'string' && v.trim() === '') return true;
+  return false;
+}
+
 /**
- * Format a USD amount as `$X.YK` / `$X.YM` / `$X.YB`. Falls back to an empty
- * string when the input isn't a finite number so empty fields don't render
- * `$0` (which reads as "no funding" to the user).
+ * Format a USD amount as `$X.YK` / `$X.YM` / `$X.YB`. Returns an empty string
+ * for empty / whitespace / null / undefined / non-numeric inputs so blank
+ * fields don't render as `$0` (which reads as "no funding" to the user).
  */
 export function formatUsd(n: number | string | null | undefined): string {
-  if (n == null || !Number.isFinite(Number(n))) return '';
+  if (isEmptyForFormat(n)) return '';
   const v = Number(n);
+  if (!Number.isFinite(v)) return '';
   const abs = Math.abs(v);
   if (abs >= 1_000_000_000) {
     return `$${(v / 1_000_000_000).toFixed(abs >= 10_000_000_000 ? 0 : 1)}B`;
@@ -25,11 +36,13 @@ export function formatUsd(n: number | string | null | undefined): string {
 
 /**
  * Format an Apollo growth fraction (e.g. `0.34`) as a signed percent
- * (e.g. `+34%`). Returns an empty string when the input isn't usable.
+ * (e.g. `+34%`). Returns an empty string for empty / whitespace / null /
+ * undefined / non-numeric inputs.
  */
 export function formatPct(frac: number | string | null | undefined): string {
-  if (frac == null || !Number.isFinite(Number(frac))) return '';
+  if (isEmptyForFormat(frac)) return '';
   const v = Number(frac);
+  if (!Number.isFinite(v)) return '';
   const sign = v > 0 ? '+' : '';
   return `${sign}${Math.round(v * 100)}%`;
 }
@@ -52,15 +65,25 @@ export function growthToneClass(
   return 'text-muted-foreground';
 }
 
+// Validate `YYYY-MM`: 4 digits, dash, 2 digits, month in 1–12. Anything
+// else (alpha months, month > 12, missing dash, wrong width) is rejected
+// so we don't produce misleading labels like "Jan 2025" for "2025-13".
+const YYYY_MM = /^(\d{4})-(\d{2})$/;
+
 /**
  * Format a `YYYY-MM` month string as a short label (e.g. `Apr 2025`). Returns
- * the original input when it can't be parsed, and an empty string when the
- * input is empty.
+ * the original input unchanged when it can't be parsed as a valid year-month
+ * (months outside 1–12, alpha characters, wrong shape), and an empty string
+ * when the input is empty.
  */
 export function formatMonth(ym: string | null | undefined): string {
   if (!ym) return '';
-  const [y, m] = String(ym).split('-');
-  if (!y) return ym;
-  const d = new Date(Number(y), (Number(m) || 1) - 1, 1);
+  const s = String(ym);
+  const match = YYYY_MM.exec(s);
+  if (!match) return s;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || month < 1 || month > 12) return s;
+  const d = new Date(year, month - 1, 1);
   return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 }
