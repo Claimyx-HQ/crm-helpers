@@ -100,7 +100,7 @@ export async function apolloPost<T = Record<string, unknown>>(
             (err as { message?: string })?.message || 'Apollo network error',
         } as T & { message?: string },
       };
-      if (attempt >= 2) break;
+      if (attempt >= 3) break;
       await sleep(500 * 2 ** attempt);
     }
   }
