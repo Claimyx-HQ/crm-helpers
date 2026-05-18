@@ -1089,8 +1089,13 @@ export function normalizeContact(
   const org = contact.organization || contact.account || {};
   const emailStatus = normalizeEmailStatus(contact.email_status);
   const phoneNumbers = derivePhoneNumbers(contact.phone_numbers);
+  // Use pickPrimary so the legacy `phone` field consistently mirrors the
+  // same entry `phone_status` is derived from. `derivePhoneNumbers` marks
+  // primary in place rather than reordering, so `phoneNumbers[0]` is NOT
+  // necessarily the primary — that would drift `phone` and `phone_status`
+  // apart on Apollo payloads where the primary isn't the first entry.
   const fallbackPhone =
-    phoneNumbers[0]?.number ||
+    pickPrimary(phoneNumbers)?.number ||
     contact.phone_numbers?.[0]?.raw_number ||
     contact.phone_numbers?.[0]?.sanitized_number ||
     contact.sanitized_phone ||
