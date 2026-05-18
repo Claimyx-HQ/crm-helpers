@@ -6,7 +6,10 @@
   "exports": {
     "./apollo": "./src/apollo.ts",
     "./base44": "./src/base44.ts",
-    "./text": "./src/text.ts"
+    "./text": "./src/text.ts",
+    "./triggers": "./src/triggers.ts",
+    "./format": "./src/format.ts",
+    "./enums": "./src/enums.ts"
   },
   "publish": {
     "include": [
