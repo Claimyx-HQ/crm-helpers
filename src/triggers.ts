@@ -1,9 +1,16 @@
 // Derives /triggers feed events from already-fetched Company rows.
 //
-// The input shape is intentionally minimal (see {@link CompanyForTriggers})
-// so this module stays framework- and normalizer-agnostic — callers can hand
-// it any object that exposes the funding_events / job_postings /
-// news_articles arrays, regardless of where those arrays came from.
+// IMPORTANT: this module operates on the NORMALIZED storage shape produced
+// by `./apollo.ts` (i.e. `funding_events[].date`, `job_postings[].posted_at`,
+// `news_articles[].published_at`). It does NOT parse raw Apollo payloads —
+// those use alternate keys (`funded_at`, `publish_date`, etc.) and need to
+// be run through `extractFundingEvents` / `extractJobPostings` /
+// `extractNewsArticles` first. Passing a raw payload here would silently
+// drop events because the date keys won't match.
+//
+// The {@link CompanyForTriggers} shape is intentionally minimal so this
+// module stays framework-agnostic, but the shape names match the normalized
+// fields exactly.
 
 /**
  * Lookback window (days) for surfacing funding rounds. Rounds older than this
@@ -29,10 +36,12 @@ export const NEWS_WINDOW_DAYS = 30;
 export const NEWS_COVERAGE_MIN = 0.5;
 
 /**
- * Minimal structural shape this module reads off a Company row. Only the
- * fields actually used here are declared — keep this local (do NOT import
- * NormalizedCompany from ./apollo.ts) so the module stays decoupled from the
- * Apollo normalizer and any other upstream representation.
+ * Minimal structural shape this module reads off a Company row. Field names
+ * match the NORMALIZED storage shape (post-`extract*` helpers in
+ * `./apollo.ts`), not raw Apollo. Only the fields actually used here are
+ * declared — keep this local (do NOT import `NormalizedCompany` from
+ * `./apollo.ts`) so the module stays decoupled from the Apollo normalizer
+ * and any other upstream representation.
  */
 export interface CompanyForTriggers {
   id: string;
@@ -81,9 +90,10 @@ export function signatureFor(
 
 /**
  * Derive the most recent qualifying funding event per company within the
- * {@link FUNDING_WINDOW_DAYS} window. Only the single most recent event per
- * company is surfaced — multi-round bursts (e.g. a startup with two rounds
- * in 60 days) would otherwise spam the feed. Output is sorted by date
+ * {@link FUNDING_WINDOW_DAYS} window. Reads `funding_events[].date` only —
+ * NOT raw Apollo keys like `funded_at`. Only the single most recent event
+ * per company is surfaced — multi-round bursts (e.g. a startup with two
+ * rounds in 60 days) would otherwise spam the feed. Output is sorted by date
  * descending.
  */
 export function deriveFundingEvents(
@@ -115,7 +125,8 @@ export function deriveFundingEvents(
 
 /**
  * Derive the most recent qualifying job-posting event per company within the
- * {@link HIRING_WINDOW_DAYS} window. Output is sorted by date descending.
+ * {@link HIRING_WINDOW_DAYS} window. Reads `job_postings[].posted_at` only
+ * — NOT raw Apollo keys like `date`. Output is sorted by date descending.
  */
 export function deriveHiringEvents(
   companies: CompanyForTriggers[],
@@ -146,7 +157,9 @@ export function deriveHiringEvents(
 
 /**
  * Derive the most recent qualifying news article per company within the
- * {@link NEWS_WINDOW_DAYS} window. Output is sorted by date descending.
+ * {@link NEWS_WINDOW_DAYS} window. Reads `news_articles[].published_at`
+ * only — NOT raw Apollo keys like `publish_date`. Output is sorted by date
+ * descending.
  */
 export function deriveNewsEvents(
   companies: CompanyForTriggers[],

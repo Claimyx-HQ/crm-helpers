@@ -345,7 +345,11 @@ export async function chunkedEntityScan<T extends ScannableEntity>(
       counts.failures += 1;
       processedCount += 1;
       lastProcessedCreatedDate = item.created_date || lastProcessedCreatedDate;
-      console.error(`[${label}] row ${item.id} failed: ${(err as { message?: string })?.message}`);
+      // Log the full error object as a second arg so the runtime keeps
+      // the stack and any non-Error throw payload (e.g. plain strings)
+      // — critical for diagnosing production backfill failures where
+      // the only signal is this log line.
+      console.error(`[${label}] row ${item.id} failed`, err);
     }
   }
 
