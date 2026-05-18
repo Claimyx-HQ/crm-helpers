@@ -1,0 +1,50 @@
+name: Publish to JSR
+  
+  # Publishes a new version to JSR whenever a `vX.Y.Z` tag is pushed.
+  # Uses JSR's OIDC tokenless publishing — no API keys needed.
+  #
+  # Setup (one-time):
+  #   1. Owner of the @claimyx scope on jsr.io must link this repo:
+  #      jsr.io → @claimyx scope → Settings → GitHub Actions → add
+  #      Claimyx-HQ/crm-helpers.
+  #   2. After that, every `git tag vX.Y.Z && git push --tags` publishes
+  #      X.Y.Z to JSR, provided deno.json's `version` matches the tag.
+  
+  on:
+    push:
+      tags:
+        - 'v*'
+  
+  jobs:
+    publish:
+      runs-on: ubuntu-latest
+
+      permissions:
+        contents: read   # checkout
+        id-token: write  # OIDC token for JSR
+  
+      steps: 
+        - name: Checkout
+          uses: actions/checkout@v4
+  
+        - name: Set up Deno
+          uses: denoland/setup-deno@v2
+          with:
+            deno-version: v2.x
+  
+        - name: Verify deno.json version matches tag
+          run: |
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            PKG_VERSION=$(deno eval "console.log(JSON.parse(await Deno.readTextFile('deno.json')).version)")
+            if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+              echo "ERROR: tag v$TAG_VERSION does not match deno.json version $PKG_VERSION."
+              echo "Update deno.json's version field and re-tag."
+              exit 1
+            fi
+            echo "Publishing version $PKG_VERSION."
+  
+        - name: Typecheck
+          run: deno check src/
+  
+        - name: Publish to JSR
+          run: deno publish
