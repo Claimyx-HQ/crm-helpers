@@ -4,7 +4,13 @@
 //
 // Phase-06 expanded the type set and normalizers to cover ~50 additional
 // Lead / Company fields (phones, funding, hiring, news, headcount,
-// employment history, intent, social URLs, corporate family, etc.).
+// employment history, intent, social URLs, corporate family, etc.). Those
+// fields are typed as OPTIONAL on the public `NormalizedCompany` /
+// `NormalizedLead` interfaces so v1.0.x-shaped objects (which predate them)
+// still satisfy the v1.1.0 type — v1.1.0 is purely additive at the type
+// level. The normalizers themselves always populate every field, so reads
+// from `normalizeAccount(...)` / `normalizeContact(...)` output are
+// guaranteed to see real values for the optional-typed properties.
 
 import { buildLocation, extractDomain, normalizeEmailStatus, sleep } from './text.ts';
 import { type PhoneType } from './enums.ts';
@@ -731,9 +737,18 @@ export interface ApolloContactInput {
   person_country?: string;
 }
 
-/** Shape of a Company row in the CRM, after normalization from Apollo. */
+/**
+ * Shape of a Company row in the CRM, after normalization from Apollo.
+ *
+ * The pre-Phase-06 fields are required. The Phase-06 additions (everything
+ * below the "Phase-06 additions" marker) are typed as OPTIONAL so v1.0.x-
+ * shaped objects remain assignable to this type — the normalizer always
+ * populates them at runtime (with `''` / `[]` / `{}` defaults) so reads
+ * from `normalizeAccount(...)` output don't need null checks for these
+ * fields in practice, only when constructing the type by hand.
+ */
 export interface NormalizedCompany {
-  // Pre-Phase-06 fields ----------------------------------------------------
+  // Pre-Phase-06 fields (required) ----------------------------------------
   name: string;
   domain: string;
   website: string;
@@ -761,57 +776,54 @@ export interface NormalizedCompany {
   apollo_updated_at: string | null;
   raw: ApolloAccount;
 
-  // Phase-06 additions ----------------------------------------------------
-  // Strings + arrays + objects always present (empty when Apollo didn't
-  // return anything). Numeric / boolean / optional-date fields are set
-  // conditionally so empty Apollo payloads don't clobber known-good values.
-  long_description: string;
-  seo_description: string;
-  logo_url: string;
-  crunchbase_url: string;
-  angellist_url: string;
-  twitter_url: string;
-  facebook_url: string;
-  blog_url: string;
-  chief_executive_officer: string;
-  headquarters_street_address: string;
-  headquarters_postal_code: string;
-  account_stage_name: string;
-  account_owner_name: string;
-  parent_organization_name: string;
-  acquired_by: string;
-  acquisition_status: string;
-  latest_funding_stage: string;
-  organization_revenue_printed: string;
-  annual_revenue_printed: string;
-  total_funding_printed: string;
-  org_chart_sector: string;
-  existence_level: string;
-  secondary_industries: string[];
-  naics_codes: string[];
-  sic_codes: string[];
-  languages: string[];
-  linkedin_specialties: string[];
-  linkedin_industries: string[];
-  latest_job_posting_titles: string[];
-  seo_keywords: string[];
-  domain_categories: string[];
-  domain_history: string[];
-  intent_topics: string[];
-  subsidiary_organization_ids: string[];
-  subsidiary_organization_names: string[];
-  current_technologies: { name: string; category: string; first_seen: string }[];
-  funding_events: FundingEventEntry[];
-  job_postings: JobPostingEntry[];
-  news_articles: NewsArticleEntry[];
-  headcount_chart: HeadcountChartEntry[];
-  organization_locations: ApolloSecondaryLocation[];
-  phone_numbers: PhoneNumberEntry[];
+  // Phase-06 additions (optional for TS-level backcompat with v1.0.x) ----
+  long_description?: string;
+  seo_description?: string;
+  logo_url?: string;
+  crunchbase_url?: string;
+  angellist_url?: string;
+  twitter_url?: string;
+  facebook_url?: string;
+  blog_url?: string;
+  chief_executive_officer?: string;
+  headquarters_street_address?: string;
+  headquarters_postal_code?: string;
+  account_stage_name?: string;
+  account_owner_name?: string;
+  parent_organization_name?: string;
+  acquired_by?: string;
+  acquisition_status?: string;
+  latest_funding_stage?: string;
+  organization_revenue_printed?: string;
+  annual_revenue_printed?: string;
+  total_funding_printed?: string;
+  org_chart_sector?: string;
+  existence_level?: string;
+  secondary_industries?: string[];
+  naics_codes?: string[];
+  sic_codes?: string[];
+  languages?: string[];
+  linkedin_specialties?: string[];
+  linkedin_industries?: string[];
+  latest_job_posting_titles?: string[];
+  seo_keywords?: string[];
+  domain_categories?: string[];
+  domain_history?: string[];
+  intent_topics?: string[];
+  subsidiary_organization_ids?: string[];
+  subsidiary_organization_names?: string[];
+  current_technologies?: { name: string; category: string; first_seen: string }[];
+  funding_events?: FundingEventEntry[];
+  job_postings?: JobPostingEntry[];
+  news_articles?: NewsArticleEntry[];
+  headcount_chart?: HeadcountChartEntry[];
+  organization_locations?: ApolloSecondaryLocation[];
+  phone_numbers?: PhoneNumberEntry[];
   primary_phone?: { number: string; source: string; status: PhoneStatus };
-  departmental_head_count: Record<string, number>;
-  persona_counts: Record<string, number>;
-  intent_signal_account: Record<string, unknown>;
-  owned_by_organization_id: string;
+  departmental_head_count?: Record<string, number>;
+  persona_counts?: Record<string, number>;
+  intent_signal_account?: Record<string, unknown>;
+  owned_by_organization_id?: string;
   founded_year?: number;
   publicly_traded_symbol?: string;
   publicly_traded_exchange?: string;
@@ -836,9 +848,14 @@ export interface NormalizedCompany {
   linkedin_employee_count?: number;
 }
 
-/** Shape of a Lead row in the CRM, after normalization from Apollo. */
+/**
+ * Shape of a Lead row in the CRM, after normalization from Apollo.
+ *
+ * Same approach as {@link NormalizedCompany}: pre-Phase-06 fields are
+ * required; Phase-06 additions are optional for TS-level backcompat.
+ */
 export interface NormalizedLead {
-  // Pre-Phase-06 fields ----------------------------------------------------
+  // Pre-Phase-06 fields (required) ----------------------------------------
   first_name: string;
   last_name: string;
   email: string;
@@ -859,36 +876,36 @@ export interface NormalizedLead {
   score: number;
   last_activity_at: string;
 
-  // Phase-06 additions ----------------------------------------------------
-  headline: string;
-  bio: string;
-  twitter_url: string;
-  github_url: string;
-  facebook_url: string;
-  linkedin_uid: string;
-  linkedin_id: string;
-  seniority: string;
-  departments: string[];
-  subdepartments: string[];
-  functions: string[];
-  language_codes: string[];
-  intent_topics: string[];
-  employment_history: ApolloEmploymentHistoryEntry[];
-  education: ApolloEducationEntry[];
-  phone_numbers: PhoneNumberEntry[];
-  mobile_phone: string;
-  direct_phone: string;
-  phone_status: PhoneStatus;
-  time_zone: string;
-  person_city: string;
-  person_state: string;
-  person_country: string;
-  extrapolated_email: string;
-  hubspot_id: string;
-  salesforce_id: string;
-  crm_owner_id: string;
-  apollo_account_id: string;
-  apollo_original_source: string;
+  // Phase-06 additions (optional for TS-level backcompat with v1.0.x) ----
+  headline?: string;
+  bio?: string;
+  twitter_url?: string;
+  github_url?: string;
+  facebook_url?: string;
+  linkedin_uid?: string;
+  linkedin_id?: string;
+  seniority?: string;
+  departments?: string[];
+  subdepartments?: string[];
+  functions?: string[];
+  language_codes?: string[];
+  intent_topics?: string[];
+  employment_history?: ApolloEmploymentHistoryEntry[];
+  education?: ApolloEducationEntry[];
+  phone_numbers?: PhoneNumberEntry[];
+  mobile_phone?: string;
+  direct_phone?: string;
+  phone_status?: PhoneStatus;
+  time_zone?: string;
+  person_city?: string;
+  person_state?: string;
+  person_country?: string;
+  extrapolated_email?: string;
+  hubspot_id?: string;
+  salesforce_id?: string;
+  crm_owner_id?: string;
+  apollo_account_id?: string;
+  apollo_original_source?: string;
   linkedin_followers_count?: number;
   extrapolated_email_confidence?: number;
   intent_strength?: number;
@@ -908,6 +925,11 @@ export interface NormalizedLead {
  * store. Matches the shape produced by `syncApolloLeads` so re-running the
  * Apollo full sync over a row written by this helper is a no-op (the
  * `isUnchanged` check from `./text.ts` short-circuits).
+ *
+ * The Phase-06 additions on the return type are typed optional, but this
+ * function ALWAYS populates them (with `''` / `[]` / `{}` defaults when
+ * Apollo returned nothing) so callers reading the result can rely on real
+ * values being present.
  */
 export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   const org = account.organization || {};
@@ -1110,6 +1132,10 @@ export function organizationAsAccount(org: ApolloOrganization): ApolloAccount {
  * Convert an Apollo `/mixed_people/search` row into the Lead payload we
  * store. Same shape `syncApolloLeads` produces, so re-syncing a
  * discovery-imported Lead via the full Apollo sync is a no-op.
+ *
+ * The Phase-06 additions on the return type are typed optional, but this
+ * function ALWAYS populates them so callers reading the result can rely on
+ * real values being present.
  */
 export function normalizeContact(
   contact: ApolloContactInput,
