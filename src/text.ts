@@ -101,3 +101,26 @@ export function isUnchanged(
   }
   return true;
 }
+
+// Regex matches strings that look like a phone number: optional leading
+// `+`, then digits / spaces / dashes / parens, requiring at least one
+// digit followed by 6+ more digit-or-punctuation characters. The followup
+// digit-count check guards against pathological inputs like `(((((((1`.
+const PHONE_LIKE_NAME = /^[+\s\-()]*\d[\d\s\-()]{6,}$/;
+
+/**
+ * True iff `name` looks like a phone number that's been stuffed into a
+ * name field. Used to detect Quo's fallback behavior where, when no caller
+ * name is known, the caller's phone number ends up as the org/lead name.
+ * Storing those as Company names produces useless `+15551234567` rows;
+ * callers should fall back to a domain or `Unknown` instead.
+ *
+ * Threshold: at least 7 actual digits (after stripping non-digits) so a
+ * legitimate two-word org name with a stray digit doesn't false-positive.
+ */
+export function isPhoneLikeName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const s = String(name).trim();
+  if (!PHONE_LIKE_NAME.test(s)) return false;
+  return s.replace(/\D/g, '').length >= 7;
+}
