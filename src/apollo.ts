@@ -7,6 +7,7 @@
 // employment history, intent, social URLs, corporate family, etc.).
 
 import { buildLocation, extractDomain, normalizeEmailStatus, sleep } from './text.ts';
+import { type PhoneType } from './enums.ts';
 
 // ---------------------------------------------------------------------------
 // Apollo constants
@@ -144,14 +145,13 @@ export async function apolloPost<T = Record<string, unknown>>(
 // ---------------------------------------------------------------------------
 
 /**
- * Map Apollo's free-form phone-type strings (`type_cd`, `type`) onto our
- * fixed enum. Apollo isn't fully consistent — some payloads use `mobile`,
- * some `mobile_phone`, some `cell`. Buckets every entry into one of
- * {mobile, direct, hq, work, other} so the UI can label and pick.
+ * Map Apollo's free-form phone-type strings (`type_cd`, `type`) onto the
+ * {@link PhoneType} enum shared with `./enums.ts`. Apollo isn't fully
+ * consistent — some payloads use `mobile`, some `mobile_phone`, some
+ * `cell`. Buckets every entry into one of {mobile, direct, hq, work,
+ * other} so the UI can label and pick.
  */
-export function mapPhoneType(
-  typeRaw: string | null | undefined,
-): 'work' | 'mobile' | 'direct' | 'hq' | 'other' {
+export function mapPhoneType(typeRaw: string | null | undefined): PhoneType {
   if (!typeRaw) return 'other';
   const t = String(typeRaw).toLowerCase();
   if (t.includes('mobile') || t === 'cell' || t === 'cell_phone') return 'mobile';
@@ -192,7 +192,7 @@ export function normalizePhoneStatus(raw: string | null | undefined): PhoneStatu
 
 /** Structured phone entry stored on Lead and Company rows. */
 export interface PhoneNumberEntry {
-  type: 'work' | 'mobile' | 'direct' | 'hq' | 'other';
+  type: PhoneType;
   number: string;
   primary: boolean;
   status: PhoneStatus;
@@ -516,6 +516,20 @@ export function buildPrimaryPhone(
 // the `typeof === 'object'` check and surprise downstream consumers.
 function isPlainRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Coerce raw to a finite number, or undefined when it's null/undefined,
+ * an empty/whitespace string, or non-finite after coercion. Used to gate
+ * optional numeric assignments in the normalizers below — without this,
+ * `Number('')` returns 0 and an Apollo "" can persist as a real zero,
+ * clobbering a previously-known-good value.
+ */
+function finiteNumber(raw: unknown): number | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === 'string' && raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,34 +1040,49 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
     owned_by_organization_id: org.owned_by_organization_id || '',
   };
 
+  // Optional numerics: gate every assignment through `finiteNumber` so an
+  // Apollo `""` or whitespace string doesn't get persisted as 0 (which
+  // would clobber a previously-known-good value with a fake zero).
   if (primaryPhoneStructured) out.primary_phone = primaryPhoneStructured;
-  if (org.founded_year != null) out.founded_year = Number(org.founded_year);
+  const foundedYear = finiteNumber(org.founded_year);
+  if (foundedYear !== undefined) out.founded_year = foundedYear;
   if (org.publicly_traded_symbol) out.publicly_traded_symbol = org.publicly_traded_symbol;
   if (org.publicly_traded_exchange) out.publicly_traded_exchange = org.publicly_traded_exchange;
-  if (org.market_cap != null) out.market_cap = Number(org.market_cap);
-  if (org.organization_revenue != null) out.organization_revenue = Number(org.organization_revenue);
-  if (org.total_funding != null) out.total_funding = Number(org.total_funding);
-  if (org.latest_funding_amount != null) out.latest_funding_amount = Number(org.latest_funding_amount);
+  const marketCap = finiteNumber(org.market_cap);
+  if (marketCap !== undefined) out.market_cap = marketCap;
+  const orgRevenue = finiteNumber(org.organization_revenue);
+  if (orgRevenue !== undefined) out.organization_revenue = orgRevenue;
+  const totalFunding = finiteNumber(org.total_funding);
+  if (totalFunding !== undefined) out.total_funding = totalFunding;
+  const latestFundingAmount = finiteNumber(org.latest_funding_amount);
+  if (latestFundingAmount !== undefined) out.latest_funding_amount = latestFundingAmount;
   else if (latestFunding) out.latest_funding_amount = latestFunding.amount;
   if (org.latest_funding_round_date) out.latest_funding_round_date = org.latest_funding_round_date;
   else if (latestFunding && latestFunding.date) out.latest_funding_round_date = latestFunding.date;
-  if (org.organization_headcount_six_month_growth != null)
-    out.headcount_growth_6m = Number(org.organization_headcount_six_month_growth);
-  if (org.organization_headcount_twelve_month_growth != null)
-    out.headcount_growth_12m = Number(org.organization_headcount_twelve_month_growth);
-  if (org.organization_headcount_twenty_four_month_growth != null)
-    out.headcount_growth_24m = Number(org.organization_headcount_twenty_four_month_growth);
-  if (org.num_open_jobs != null) out.num_open_jobs = Number(org.num_open_jobs);
-  if (org.num_suborganizations != null) out.num_suborganizations = Number(org.num_suborganizations);
-  if (org.monthly_visits != null) out.monthly_visits = Number(org.monthly_visits);
-  if (org.monthly_visits_change_pct != null) out.monthly_visits_change_pct = Number(org.monthly_visits_change_pct);
-  if (org.alexa_ranking != null) out.alexa_ranking = Number(org.alexa_ranking);
-  if (org.intent_strength != null) out.intent_strength = Number(org.intent_strength);
+  const growth6 = finiteNumber(org.organization_headcount_six_month_growth);
+  if (growth6 !== undefined) out.headcount_growth_6m = growth6;
+  const growth12 = finiteNumber(org.organization_headcount_twelve_month_growth);
+  if (growth12 !== undefined) out.headcount_growth_12m = growth12;
+  const growth24 = finiteNumber(org.organization_headcount_twenty_four_month_growth);
+  if (growth24 !== undefined) out.headcount_growth_24m = growth24;
+  const numOpenJobs = finiteNumber(org.num_open_jobs);
+  if (numOpenJobs !== undefined) out.num_open_jobs = numOpenJobs;
+  const numSubs = finiteNumber(org.num_suborganizations);
+  if (numSubs !== undefined) out.num_suborganizations = numSubs;
+  const monthlyVisits = finiteNumber(org.monthly_visits);
+  if (monthlyVisits !== undefined) out.monthly_visits = monthlyVisits;
+  const monthlyChange = finiteNumber(org.monthly_visits_change_pct);
+  if (monthlyChange !== undefined) out.monthly_visits_change_pct = monthlyChange;
+  const alexa = finiteNumber(org.alexa_ranking);
+  if (alexa !== undefined) out.alexa_ranking = alexa;
+  const intent = finiteNumber(org.intent_strength);
+  if (intent !== undefined) out.intent_strength = intent;
   if (org.show_intent != null) out.show_intent = !!org.show_intent;
   if (org.is_b2b != null) out.is_b2b = !!org.is_b2b;
   if (org.acquired_at) out.acquired_at = org.acquired_at;
   if (org.linkedin_uid) out.linkedin_uid = org.linkedin_uid;
-  if (org.linkedin_employee_count != null) out.linkedin_employee_count = Number(org.linkedin_employee_count);
+  const linkedinEmployees = finiteNumber(org.linkedin_employee_count);
+  if (linkedinEmployees !== undefined) out.linkedin_employee_count = linkedinEmployees;
 
   return out;
 }
@@ -1181,11 +1210,15 @@ export function normalizeContact(
     apollo_original_source: contact.apollo_original_source || contact.original_source || '',
   };
 
-  if (contact.linkedin_followers_count != null)
-    out.linkedin_followers_count = Number(contact.linkedin_followers_count);
-  if (contact.extrapolated_email_confidence != null)
-    out.extrapolated_email_confidence = Number(contact.extrapolated_email_confidence);
-  if (contact.intent_strength != null) out.intent_strength = Number(contact.intent_strength);
+  // Optional numerics: same finite-gate as normalizeAccount above so an
+  // Apollo `""` doesn't get persisted as a real 0 / NaN for engagement-
+  // prediction or intent fields.
+  const followersCount = finiteNumber(contact.linkedin_followers_count);
+  if (followersCount !== undefined) out.linkedin_followers_count = followersCount;
+  const extrapolatedConfidence = finiteNumber(contact.extrapolated_email_confidence);
+  if (extrapolatedConfidence !== undefined) out.extrapolated_email_confidence = extrapolatedConfidence;
+  const contactIntent = finiteNumber(contact.intent_strength);
+  if (contactIntent !== undefined) out.intent_strength = contactIntent;
   if (contact.is_likely_to_engage != null) out.is_likely_to_engage = !!contact.is_likely_to_engage;
   if (contact.email_domain_catchall != null) out.email_domain_catchall = !!contact.email_domain_catchall;
   if (contact.apollo_created_at) out.apollo_created_at = contact.apollo_created_at;
