@@ -1,6 +1,6 @@
 {
   "name": "@claimyx/crm-helpers",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Shared TypeScript helpers for the Claimyx CRM (Base44 backend functions and elsewhere).",
   "license": "MIT",
   "exports": {
