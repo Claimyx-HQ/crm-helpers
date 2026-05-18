@@ -1,0 +1,23 @@
+{
+  "name": "@claimyx/crm-helpers",
+  "version": "1.0.0",
+  "description": "Shared TypeScript helpers for the Claimyx CRM (Base44 backend functions and elsewhere).",
+  "license": "MIT",
+  "exports": {
+    "./apollo": "./src/apollo.ts",
+    "./base44": "./src/base44.ts",
+    "./text": "./src/text.ts"
+  },
+  "publish": {
+    "include": [
+      "src/",
+      "README.md",
+      "LICENSE",
+      "deno.json"
+    ]
+  },
+  "tasks": {
+    "check": "deno check src/**/*.ts",
+    "publish:dry": "deno publish --dry-run"
+  }
+}
