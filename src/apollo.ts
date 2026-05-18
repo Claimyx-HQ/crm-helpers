@@ -11,9 +11,26 @@
 // level. The normalizers themselves always populate every field, so reads
 // from `normalizeAccount(...)` / `normalizeContact(...)` output are
 // guaranteed to see real values for the optional-typed properties.
+//
+// Phase-2 (v1.2.0) additionally passes through Apollo workspace state —
+// lists, labels, custom fields, account classifications, account/contact
+// score, owner/stage names, engagement counters, and active sequence
+// state. Workspace fields use the same optional-typed shape so the
+// signature stays backward-compatible.
 
 import { buildLocation, extractDomain, normalizeEmailStatus, sleep } from './text.ts';
 import { type PhoneType } from './enums.ts';
+import {
+  deriveAccountClassifications,
+  deriveExistingCustomerStatus,
+  extractAccountLists,
+  extractContactLists,
+  extractCustomFields,
+  extractLabels,
+  type ApolloAccountClassification,
+  type ApolloList,
+  type ExistingCustomerStatus,
+} from './apollo-workspace.ts';
 
 // ---------------------------------------------------------------------------
 // Apollo constants
@@ -564,6 +581,22 @@ export interface ApolloAccount {
   country?: string;
   state?: string;
   city?: string;
+
+  // Phase-2 workspace additions (Plan 05 Phase 2 Half B) -----------------
+  creator_id?: string;
+  account_classifications?: string[];
+  is_target?: boolean;
+  is_customer?: boolean;
+  is_competitor?: boolean;
+  is_partner?: boolean;
+  typed_labels?: Array<{ id?: string; name?: string }>;
+  labels?: Array<{ id?: string; name?: string } | string>;
+  account_list_memberships?: Array<{ id?: string; name?: string; list_id?: string; list_name?: string }>;
+  account_lists?: Array<{ id?: string; name?: string; list_id?: string; list_name?: string }>;
+  typed_custom_fields?: Array<{ id?: string; name?: string; value?: unknown }>;
+  custom_fields?: Record<string, unknown>;
+  account_score?: number;
+  apollo_score?: number;
 }
 
 /** Raw Apollo organization payload (nested under accounts, contacts, etc.). */
@@ -735,17 +768,49 @@ export interface ApolloContactInput {
   person_city?: string;
   person_state?: string;
   person_country?: string;
+
+  // Phase-2 workspace additions (Plan 05 Phase 2 Half B) -----------------
+  contact_stage_id?: string;
+  contact_stage_name?: string;
+  owner_id?: string;
+  owner_name?: string;
+  creator_id?: string;
+  typed_labels?: Array<{ id?: string; name?: string }>;
+  labels?: Array<{ id?: string; name?: string } | string>;
+  contact_list_memberships?: Array<{ id?: string; name?: string; list_id?: string; list_name?: string }>;
+  contact_lists?: Array<{ id?: string; name?: string; list_id?: string; list_name?: string }>;
+  typed_custom_fields?: Array<{ id?: string; name?: string; value?: unknown }>;
+  custom_fields?: Record<string, unknown>;
+  apollo_score?: number;
+  contact_score?: number;
+  account_playbook_statuses?: unknown;
+  emails_sent_count?: number;
+  emails_opened_count?: number;
+  emails_clicked_count?: number;
+  emails_replied_count?: number;
+  emails_bounced_count?: number;
+  last_emailed_at?: string;
+  last_email_opened_at?: string;
+  last_email_replied_at?: string;
+  active_sequence_id?: string;
+  active_sequence_name?: string;
+  active_sequence_step?: number;
+  active_sequence_paused?: boolean;
+  open_tasks_count?: number;
+  overdue_tasks_count?: number;
+  notes_count?: number;
+  latest_note_snippet?: string;
 }
 
 /**
  * Shape of a Company row in the CRM, after normalization from Apollo.
  *
- * The pre-Phase-06 fields are required. The Phase-06 additions (everything
- * below the "Phase-06 additions" marker) are typed as OPTIONAL so v1.0.x-
- * shaped objects remain assignable to this type — the normalizer always
- * populates them at runtime (with `''` / `[]` / `{}` defaults) so reads
- * from `normalizeAccount(...)` output don't need null checks for these
- * fields in practice, only when constructing the type by hand.
+ * The pre-Phase-06 fields are required. The Phase-06 + Phase-2 additions
+ * (everything below the markers) are typed as OPTIONAL so v1.0.x-shaped
+ * objects remain assignable to this type — the normalizer always populates
+ * them at runtime (with `''` / `[]` / `{}` defaults) so reads from
+ * `normalizeAccount(...)` output don't need null checks for these fields
+ * in practice, only when constructing the type by hand.
  */
 export interface NormalizedCompany {
   // Pre-Phase-06 fields (required) ----------------------------------------
@@ -846,13 +911,22 @@ export interface NormalizedCompany {
   acquired_at?: string;
   linkedin_uid?: string;
   linkedin_employee_count?: number;
+
+  // Phase-2 workspace additions (Plan 05 Phase 2 Half B) -----------------
+  apollo_account_lists?: ApolloList[];
+  apollo_account_label_names?: string[];
+  apollo_account_custom_fields?: Record<string, unknown>;
+  apollo_account_score?: number;
+  apollo_account_classifications?: ApolloAccountClassification[];
+  existing_customer_status?: ExistingCustomerStatus;
+  apollo_account_creator_id?: string;
 }
 
 /**
  * Shape of a Lead row in the CRM, after normalization from Apollo.
  *
  * Same approach as {@link NormalizedCompany}: pre-Phase-06 fields are
- * required; Phase-06 additions are optional for TS-level backcompat.
+ * required; Phase-06 + Phase-2 additions are optional for TS-level backcompat.
  */
 export interface NormalizedLead {
   // Pre-Phase-06 fields (required) ----------------------------------------
@@ -913,6 +987,35 @@ export interface NormalizedLead {
   email_domain_catchall?: boolean;
   apollo_created_at?: string;
   apollo_updated_at?: string;
+
+  // Phase-2 workspace additions (Plan 05 Phase 2 Half B) -----------------
+  apollo_owner_id?: string;
+  apollo_owner_name?: string;
+  apollo_contact_stage_id?: string;
+  apollo_contact_stage_name?: string;
+  apollo_lists?: ApolloList[];
+  apollo_label_ids?: string[];
+  apollo_label_names?: string[];
+  apollo_custom_fields?: Record<string, unknown>;
+  apollo_score?: number;
+  apollo_creator_id?: string;
+  apollo_account_playbook_statuses?: unknown;
+  apollo_emails_sent_count?: number;
+  apollo_emails_opened_count?: number;
+  apollo_emails_clicked_count?: number;
+  apollo_emails_replied_count?: number;
+  apollo_emails_bounced_count?: number;
+  apollo_last_emailed_at?: string;
+  apollo_last_email_opened_at?: string;
+  apollo_last_email_replied_at?: string;
+  apollo_active_sequence_id?: string;
+  apollo_active_sequence_name?: string;
+  apollo_active_sequence_step?: number;
+  apollo_active_sequence_paused?: boolean;
+  apollo_open_tasks_count?: number;
+  apollo_overdue_tasks_count?: number;
+  apollo_notes_count?: number;
+  apollo_latest_note_snippet?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -926,10 +1029,10 @@ export interface NormalizedLead {
  * Apollo full sync over a row written by this helper is a no-op (the
  * `isUnchanged` check from `./text.ts` short-circuits).
  *
- * The Phase-06 additions on the return type are typed optional, but this
- * function ALWAYS populates them (with `''` / `[]` / `{}` defaults when
- * Apollo returned nothing) so callers reading the result can rely on real
- * values being present.
+ * The Phase-06 + Phase-2 additions on the return type are typed optional,
+ * but this function ALWAYS populates them (with `''` / `[]` / `{}` defaults
+ * when Apollo returned nothing) so callers reading the result can rely on
+ * real values being present.
  */
 export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   const org = account.organization || {};
@@ -947,9 +1050,6 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   const orgLocations = buildOrganizationLocations(org.organization_locations);
   const phoneNumbers = buildCompanyPhoneNumbers(account, org);
   const primaryPhoneStructured = buildPrimaryPhone(phoneNumbers);
-  // Cap `current_technologies` to keep Company row size under the 50KB
-  // target — a few accounts (e.g. enterprise SaaS targets) return hundreds
-  // of tech entries that would otherwise blow the budget.
   const currentTechnologies = Array.isArray(org.current_technologies)
     ? org.current_technologies
         .map((t) => ({
@@ -1062,9 +1162,6 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
     owned_by_organization_id: org.owned_by_organization_id || '',
   };
 
-  // Optional numerics: gate every assignment through `finiteNumber` so an
-  // Apollo `""` or whitespace string doesn't get persisted as 0 (which
-  // would clobber a previously-known-good value with a fake zero).
   if (primaryPhoneStructured) out.primary_phone = primaryPhoneStructured;
   const foundedYear = finiteNumber(org.founded_year);
   if (foundedYear !== undefined) out.founded_year = foundedYear;
@@ -1106,6 +1203,25 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   const linkedinEmployees = finiteNumber(org.linkedin_employee_count);
   if (linkedinEmployees !== undefined) out.linkedin_employee_count = linkedinEmployees;
 
+  // ---- Phase-2 workspace state (Plan 05 Phase 2 Half B) ----------------
+  const accountLists = extractAccountLists(account as unknown as Record<string, unknown>);
+  if (accountLists.length > 0) out.apollo_account_lists = accountLists;
+  const accountLabelInfo = extractLabels(account as unknown as Record<string, unknown>);
+  if (accountLabelInfo.names.length > 0) out.apollo_account_label_names = accountLabelInfo.names;
+  const accountCustom = extractCustomFields(account as unknown as Record<string, unknown>);
+  if (Object.keys(accountCustom).length > 0) out.apollo_account_custom_fields = accountCustom;
+  const accountScore = finiteNumber(account.account_score) ?? finiteNumber(account.apollo_score);
+  if (accountScore !== undefined) out.apollo_account_score = accountScore;
+  const classifications = deriveAccountClassifications(account as unknown as Record<string, unknown>);
+  if (classifications.length > 0) {
+    out.apollo_account_classifications = classifications;
+  }
+  out.existing_customer_status = deriveExistingCustomerStatus(
+    classifications,
+    account.last_activity_date || null,
+  );
+  if (account.creator_id) out.apollo_account_creator_id = account.creator_id;
+
   return out;
 }
 
@@ -1133,9 +1249,9 @@ export function organizationAsAccount(org: ApolloOrganization): ApolloAccount {
  * store. Same shape `syncApolloLeads` produces, so re-syncing a
  * discovery-imported Lead via the full Apollo sync is a no-op.
  *
- * The Phase-06 additions on the return type are typed optional, but this
- * function ALWAYS populates them so callers reading the result can rely on
- * real values being present.
+ * The Phase-06 + Phase-2 additions on the return type are typed optional,
+ * but this function ALWAYS populates them so callers reading the result
+ * can rely on real values being present.
  */
 export function normalizeContact(
   contact: ApolloContactInput,
@@ -1144,8 +1260,6 @@ export function normalizeContact(
   const org = contact.organization || contact.account || {};
   const emailStatus = normalizeEmailStatus(contact.email_status);
   const phoneNumbers = derivePhoneNumbers(contact.phone_numbers);
-  // Use pickPrimary so the legacy `phone` field consistently mirrors the
-  // same entry `phone_status` is derived from.
   const fallbackPhone =
     pickPrimary(phoneNumbers)?.number ||
     contact.phone_numbers?.[0]?.raw_number ||
@@ -1233,7 +1347,6 @@ export function normalizeContact(
     apollo_original_source: contact.apollo_original_source || contact.original_source || '',
   };
 
-  // Optional numerics: same finite-gate as normalizeAccount above.
   const followersCount = finiteNumber(contact.linkedin_followers_count);
   if (followersCount !== undefined) out.linkedin_followers_count = followersCount;
   const extrapolatedConfidence = finiteNumber(contact.extrapolated_email_confidence);
@@ -1244,6 +1357,52 @@ export function normalizeContact(
   if (contact.email_domain_catchall != null) out.email_domain_catchall = !!contact.email_domain_catchall;
   if (contact.apollo_created_at) out.apollo_created_at = contact.apollo_created_at;
   if (contact.apollo_updated_at) out.apollo_updated_at = contact.apollo_updated_at;
+
+  // ---- Phase-2 workspace state (Plan 05 Phase 2 Half B) ----------------
+  if (contact.owner_id) out.apollo_owner_id = contact.owner_id;
+  if (contact.owner_name) out.apollo_owner_name = contact.owner_name;
+  if (contact.contact_stage_id) out.apollo_contact_stage_id = contact.contact_stage_id;
+  if (contact.contact_stage_name) out.apollo_contact_stage_name = contact.contact_stage_name;
+  const contactLists = extractContactLists(contact as unknown as Record<string, unknown>);
+  if (contactLists.length > 0) out.apollo_lists = contactLists;
+  const contactLabelInfo = extractLabels(contact as unknown as Record<string, unknown>);
+  if (contactLabelInfo.ids.length > 0) out.apollo_label_ids = contactLabelInfo.ids;
+  if (contactLabelInfo.names.length > 0) out.apollo_label_names = contactLabelInfo.names;
+  const contactCustom = extractCustomFields(contact as unknown as Record<string, unknown>);
+  if (Object.keys(contactCustom).length > 0) out.apollo_custom_fields = contactCustom;
+  const contactScore = finiteNumber(contact.apollo_score) ?? finiteNumber(contact.contact_score);
+  if (contactScore !== undefined) out.apollo_score = contactScore;
+  if (contact.creator_id) out.apollo_creator_id = contact.creator_id;
+  if (contact.account_playbook_statuses !== undefined) {
+    out.apollo_account_playbook_statuses = contact.account_playbook_statuses;
+  }
+  const emailsSent = finiteNumber(contact.emails_sent_count);
+  if (emailsSent !== undefined) out.apollo_emails_sent_count = emailsSent;
+  const emailsOpened = finiteNumber(contact.emails_opened_count);
+  if (emailsOpened !== undefined) out.apollo_emails_opened_count = emailsOpened;
+  const emailsClicked = finiteNumber(contact.emails_clicked_count);
+  if (emailsClicked !== undefined) out.apollo_emails_clicked_count = emailsClicked;
+  const emailsReplied = finiteNumber(contact.emails_replied_count);
+  if (emailsReplied !== undefined) out.apollo_emails_replied_count = emailsReplied;
+  const emailsBounced = finiteNumber(contact.emails_bounced_count);
+  if (emailsBounced !== undefined) out.apollo_emails_bounced_count = emailsBounced;
+  if (contact.last_emailed_at) out.apollo_last_emailed_at = contact.last_emailed_at;
+  if (contact.last_email_opened_at) out.apollo_last_email_opened_at = contact.last_email_opened_at;
+  if (contact.last_email_replied_at) out.apollo_last_email_replied_at = contact.last_email_replied_at;
+  if (contact.active_sequence_id) out.apollo_active_sequence_id = contact.active_sequence_id;
+  if (contact.active_sequence_name) out.apollo_active_sequence_name = contact.active_sequence_name;
+  const seqStep = finiteNumber(contact.active_sequence_step);
+  if (seqStep !== undefined) out.apollo_active_sequence_step = seqStep;
+  if (contact.active_sequence_paused != null) {
+    out.apollo_active_sequence_paused = !!contact.active_sequence_paused;
+  }
+  const openTasks = finiteNumber(contact.open_tasks_count);
+  if (openTasks !== undefined) out.apollo_open_tasks_count = openTasks;
+  const overdueTasks = finiteNumber(contact.overdue_tasks_count);
+  if (overdueTasks !== undefined) out.apollo_overdue_tasks_count = overdueTasks;
+  const notesCount = finiteNumber(contact.notes_count);
+  if (notesCount !== undefined) out.apollo_notes_count = notesCount;
+  if (contact.latest_note_snippet) out.apollo_latest_note_snippet = contact.latest_note_snippet;
 
   return out;
 }

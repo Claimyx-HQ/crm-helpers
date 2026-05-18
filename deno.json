@@ -1,10 +1,11 @@
 {
   "name": "@claimyx/crm-helpers",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shared TypeScript helpers for the Claimyx CRM (Base44 backend functions and elsewhere).",
   "license": "MIT",
   "exports": {
     "./apollo": "./src/apollo.ts",
+    "./apollo-workspace": "./src/apollo-workspace.ts",
     "./base44": "./src/base44.ts",
     "./text": "./src/text.ts",
     "./triggers": "./src/triggers.ts",
