@@ -18,7 +18,7 @@
 // state. Workspace fields use the same optional-typed shape so the
 // signature stays backward-compatible.
 
-import { buildLocation, extractDomain, normalizeEmailStatus, sleep } from './text.ts';
+import { buildLocation, extractDomain, normalizeEmailStatus } from './text.ts';
 import { type PhoneType } from './enums.ts';
 import {
   deriveAccountClassifications,
@@ -31,13 +31,12 @@ import {
   type ApolloList,
   type ExistingCustomerStatus,
 } from './apollo-workspace.ts';
-
-// ---------------------------------------------------------------------------
-// Apollo constants
-// ---------------------------------------------------------------------------
-
-/** Base URL for Apollo's REST API v1. */
-export const APOLLO_BASE = 'https://api.apollo.io/api/v1';
+// Re-export the low-level Apollo HTTP primitives. They live in
+// `./apollo-http.ts` to break the `apollo.ts` ↔ `apollo-workspace.ts` import
+// cycle (workspace needs apolloPost; apollo.ts needs workspace derivations).
+// Consumers can continue importing `apolloPost` / `ApolloResponse` / `APOLLO_BASE`
+// from `@claimyx/crm-helpers/apollo` without code changes.
+export { APOLLO_BASE, apolloPost, type ApolloResponse } from './apollo-http.ts';
 
 /**
  * Maximum leads pulled per company in a single discovery run. Mirror this
@@ -79,91 +78,12 @@ export const CURRENT_TECHNOLOGIES_CAP = 30; // ~3 categories × 10 entries
 // ---------------------------------------------------------------------------
 // Apollo HTTP
 // ---------------------------------------------------------------------------
-
-/**
- * Result of an {@link apolloPost} call. `ok` mirrors `response.ok` (true for
- * 2xx). `data` is the parsed JSON body regardless of status — non-2xx
- * responses are returned instead of thrown so callers can surface a useful
- * error message from `data.error` / `data.message`.
- *
- * IMPORTANT: callers MUST check `res.ok` before reading `res.data` as
- * success-shaped. Treating non-2xx as empty results masks operator-actionable
- * failures (401 invalid key, 403 quota, 400 bad request).
- */
-export interface ApolloResponse<T = Record<string, unknown>> {
-  ok: boolean;
-  status: number;
-  data: T & { message?: string; error?: string };
-}
-
-/**
- * POST to an Apollo endpoint with a built-in retry ladder for transient
- * failures (4 attempts max, 500ms → 1s → 2s ≈ 3.5s total). Retries on:
- *
- * - 429 (rate limit) — Apollo's per-second cap usually clears in well under
- *   a second, so the short ladder is the right shape.
- * - 5xx (gateway / upstream errors) — also transient, same backoff.
- * - Network errors — same backoff via the outer catch.
- *
- * Anything longer just burns the chunk budget. Returns the parsed JSON
- * regardless of HTTP status (see {@link ApolloResponse}).
- *
- * `path` can be a full URL or a path relative to {@link APOLLO_BASE}.
- */
-export async function apolloPost<T = Record<string, unknown>>(
-  path: string,
-  apiKey: string,
-  body: Record<string, unknown>,
-): Promise<ApolloResponse<T>> {
-  const url = path.startsWith('http') ? path : `${APOLLO_BASE}${path}`;
-  let lastError: ApolloResponse<T> | null = null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          'x-api-key': apiKey,
-        },
-        body: JSON.stringify(body),
-      });
-      const data = (await response.json().catch(() => ({}))) as T & {
-        message?: string;
-        error?: string;
-      };
-      if (response.status === 429 && attempt < 3) {
-        await sleep(500 * 2 ** attempt);
-        continue;
-      }
-      if (response.status >= 500 && response.status < 600 && attempt < 3) {
-        await sleep(500 * 2 ** attempt);
-        continue;
-      }
-      return { ok: response.ok, status: response.status, data };
-    } catch (err) {
-      lastError = {
-        ok: false,
-        status: 0,
-        data: {
-          message:
-            (err as { message?: string })?.message || 'Apollo network error',
-        } as T & { message?: string },
-      };
-      if (attempt >= 2) break;
-      await sleep(500 * 2 ** attempt);
-    }
-  }
-  return (
-    lastError || {
-      ok: false,
-      status: 0,
-      data: { message: 'Apollo request failed after retries' } as T & {
-        message?: string;
-      },
-    }
-  );
-}
+//
+// `apolloPost`, `ApolloResponse`, and `APOLLO_BASE` are defined in
+// `./apollo-http.ts` and re-exported from this module (see the import block
+// at the top of the file). The extraction breaks the apollo ↔ apollo-workspace
+// import cycle; the public surface from `@claimyx/crm-helpers/apollo` is
+// unchanged.
 
 // ---------------------------------------------------------------------------
 // Phone-number derivation
@@ -1204,18 +1124,20 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
   if (linkedinEmployees !== undefined) out.linkedin_employee_count = linkedinEmployees;
 
   // ---- Phase-2 workspace state (Plan 05 Phase 2 Half B) ----------------
-  const accountLists = extractAccountLists(account as unknown as Record<string, unknown>);
-  if (accountLists.length > 0) out.apollo_account_lists = accountLists;
+  // Always assign workspace-state arrays / objects, even when empty. If
+  // Apollo later removes a list, label, classification, or custom-field
+  // value, the next sync MUST clear the stale CRM row — guarding on
+  // `length > 0` would freeze the previous value in place. The interface
+  // types stay `?:` for v1.0.x-shaped consumers (Phase-06 additive
+  // backcompat); the runtime contract is "always present, possibly empty".
+  out.apollo_account_lists = extractAccountLists(account as unknown as Record<string, unknown>);
   const accountLabelInfo = extractLabels(account as unknown as Record<string, unknown>);
-  if (accountLabelInfo.names.length > 0) out.apollo_account_label_names = accountLabelInfo.names;
-  const accountCustom = extractCustomFields(account as unknown as Record<string, unknown>);
-  if (Object.keys(accountCustom).length > 0) out.apollo_account_custom_fields = accountCustom;
+  out.apollo_account_label_names = accountLabelInfo.names;
+  out.apollo_account_custom_fields = extractCustomFields(account as unknown as Record<string, unknown>);
   const accountScore = finiteNumber(account.account_score) ?? finiteNumber(account.apollo_score);
   if (accountScore !== undefined) out.apollo_account_score = accountScore;
   const classifications = deriveAccountClassifications(account as unknown as Record<string, unknown>);
-  if (classifications.length > 0) {
-    out.apollo_account_classifications = classifications;
-  }
+  out.apollo_account_classifications = classifications;
   out.existing_customer_status = deriveExistingCustomerStatus(
     classifications,
     account.last_activity_date || null,
@@ -1363,13 +1285,15 @@ export function normalizeContact(
   if (contact.owner_name) out.apollo_owner_name = contact.owner_name;
   if (contact.contact_stage_id) out.apollo_contact_stage_id = contact.contact_stage_id;
   if (contact.contact_stage_name) out.apollo_contact_stage_name = contact.contact_stage_name;
-  const contactLists = extractContactLists(contact as unknown as Record<string, unknown>);
-  if (contactLists.length > 0) out.apollo_lists = contactLists;
+  // Same "always-assign, possibly-empty" contract as the account normalizer
+  // above — see the comment in `normalizeAccount` for the full rationale.
+  // If a label / list / custom-field is removed in Apollo, the next sync
+  // must clear the CRM row; guarding on `length > 0` would freeze stale data.
+  out.apollo_lists = extractContactLists(contact as unknown as Record<string, unknown>);
   const contactLabelInfo = extractLabels(contact as unknown as Record<string, unknown>);
-  if (contactLabelInfo.ids.length > 0) out.apollo_label_ids = contactLabelInfo.ids;
-  if (contactLabelInfo.names.length > 0) out.apollo_label_names = contactLabelInfo.names;
-  const contactCustom = extractCustomFields(contact as unknown as Record<string, unknown>);
-  if (Object.keys(contactCustom).length > 0) out.apollo_custom_fields = contactCustom;
+  out.apollo_label_ids = contactLabelInfo.ids;
+  out.apollo_label_names = contactLabelInfo.names;
+  out.apollo_custom_fields = extractCustomFields(contact as unknown as Record<string, unknown>);
   const contactScore = finiteNumber(contact.apollo_score) ?? finiteNumber(contact.contact_score);
   if (contactScore !== undefined) out.apollo_score = contactScore;
   if (contact.creator_id) out.apollo_creator_id = contact.creator_id;

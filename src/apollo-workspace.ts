@@ -16,7 +16,10 @@
 // pre-extracted slice; callers in the sales-crm functions can mix and match
 // without re-implementing the shape adapters.
 
-import { apolloPost, type ApolloResponse } from './apollo.ts';
+// Import the HTTP client directly from `./apollo-http.ts` (not `./apollo.ts`)
+// to avoid an apollo ↔ apollo-workspace circular import — apollo.ts now also
+// depends on this module, so it cannot be the source of `apolloPost`.
+import { apolloPost, type ApolloResponse } from './apollo-http.ts';
 import { sleep } from './text.ts';
 
 // ---------------------------------------------------------------------------
@@ -549,9 +552,22 @@ export async function pollPhoneEnrichmentStatus(
       {},
     );
     if (!res.ok) {
-      // 404 on first attempt usually means Apollo hasn't materialized the
-      // status row yet — wait and retry. Persistent 4xx means failure.
-      if (attempt >= 2) return { status: 'failed', error: res.data?.message || `status ${res.status}` };
+      // Distinguish transient vs persistent failures so we don't give up
+      // on a slow-but-healthy poll:
+      //  - 404 (any attempt): Apollo materializes the enrichment status row
+      //    asynchronously, so 404 early in the poll is normal — keep polling
+      //    until we either get a real status or hit PHONE_POLL_MAX_ATTEMPTS.
+      //  - Other 4xx (>= attempt 2): client error that won't fix itself
+      //    (bad request_id, auth, plan limit) — bail with `failed`.
+      //  - 5xx / network (status 0): `apolloPost` already retried these with
+      //    its own backoff ladder; if we still got !ok, treat as transient
+      //    here too and keep polling. On final timeout the function falls
+      //    through to the `processing` return so the caller can decide.
+      const isNotFound = res.status === 404;
+      const isClientError = res.status >= 400 && res.status < 500;
+      if (!isNotFound && isClientError && attempt >= 2) {
+        return { status: 'failed', error: res.data?.message || `status ${res.status}` };
+      }
       await sleep(PHONE_POLL_INTERVAL_MS);
       continue;
     }
