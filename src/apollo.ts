@@ -167,12 +167,35 @@ export function mapPhoneType(
   return 'other';
 }
 
+/**
+ * The phone-verification status values accepted by the Lead/Company schema.
+ * Apollo also returns `dnc_status` separately — that's a do-not-call flag,
+ * NOT a verification status, so we deliberately don't conflate it into this
+ * enum. If a downstream surface needs DNC info, read `dnc_status` from the
+ * raw payload.
+ */
+export type PhoneStatus = 'verified' | 'unverified' | '';
+
+/**
+ * Coerce a raw Apollo phone status string into the narrow set the Lead/Company
+ * schema accepts. Anything we don't recognize (including DNC-style statuses
+ * like `'do_not_call'` or `'opted_out'`) becomes `''` so we never violate the
+ * enum constraint on `phone_numbers[].status` at write time.
+ */
+export function normalizePhoneStatus(raw: string | null | undefined): PhoneStatus {
+  if (!raw) return '';
+  const v = String(raw).toLowerCase();
+  if (v === 'verified') return 'verified';
+  if (v === 'unverified') return 'unverified';
+  return '';
+}
+
 /** Structured phone entry stored on Lead and Company rows. */
 export interface PhoneNumberEntry {
   type: 'work' | 'mobile' | 'direct' | 'hq' | 'other';
   number: string;
   primary: boolean;
-  status: string;
+  status: PhoneStatus;
 }
 
 /** Raw Apollo phone payload shape (a contact / account `phone_numbers[]` entry). */
@@ -192,7 +215,8 @@ export interface ApolloPhoneEntry {
  * Build the structured phone list we store on Lead and Company. Walks
  * Apollo's raw `phone_numbers[]` entries, maps each to our enum, and
  * guarantees exactly one entry is marked primary (defaults to the first
- * when Apollo doesn't flag one).
+ * when Apollo doesn't flag one). Phone status is whitelisted via
+ * {@link normalizePhoneStatus} — unknown / DNC values collapse to `''`.
  */
 export function derivePhoneNumbers(
   rawPhones: ApolloPhoneEntry[] | undefined | null,
@@ -206,7 +230,7 @@ export function derivePhoneNumbers(
       type: mapPhoneType(p?.type_cd || p?.type),
       number: String(num),
       primary: !!p?.is_primary,
-      status: p?.status || p?.dnc_status || '',
+      status: normalizePhoneStatus(p?.status),
     });
   }
   let primarySet = false;
@@ -313,7 +337,8 @@ export interface JobPostingEntry {
 
 /**
  * Normalize Apollo's `job_postings` array. Sorted newest-first; capped at
- * {@link JOB_POSTINGS_CAP} entries.
+ * {@link JOB_POSTINGS_CAP} entries. Entries with no title / location / url
+ * / posted_at are skipped so we don't waste cap slots on empty rows.
  */
 export function extractJobPostings(
   postings: ApolloJobPosting[] | null | undefined,
@@ -321,12 +346,17 @@ export function extractJobPostings(
   if (!Array.isArray(postings)) return [];
   const out: JobPostingEntry[] = [];
   for (const p of postings) {
-    out.push({
+    const entry: JobPostingEntry = {
       title: p?.title || '',
       location: p?.location || '',
       url: p?.url || '',
       posted_at: p?.posted_at || p?.date || '',
-    });
+    };
+    // Skip rows where every key field is empty. Apollo occasionally
+    // returns placeholder objects from accounts with stale ATS hookups;
+    // those would otherwise crowd out real postings against the cap.
+    if (!entry.title && !entry.location && !entry.url && !entry.posted_at) continue;
+    out.push(entry);
   }
   out.sort((a, b) => (b.posted_at || '').localeCompare(a.posted_at || ''));
   return out.slice(0, JOB_POSTINGS_CAP);
@@ -352,7 +382,8 @@ export interface NewsArticleEntry {
 
 /**
  * Normalize Apollo's `news_articles` array. Sorted newest-first; capped at
- * {@link NEWS_ARTICLES_CAP} entries.
+ * {@link NEWS_ARTICLES_CAP} entries. Entries with no title / url /
+ * published_at / summary are skipped so the cap isn't consumed by empty rows.
  */
 export function extractNewsArticles(
   articles: ApolloNewsArticle[] | null | undefined,
@@ -360,12 +391,14 @@ export function extractNewsArticles(
   if (!Array.isArray(articles)) return [];
   const out: NewsArticleEntry[] = [];
   for (const a of articles) {
-    out.push({
+    const entry: NewsArticleEntry = {
       title: a?.title || '',
       url: a?.url || '',
       published_at: a?.published_at || a?.publish_date || '',
       summary: a?.summary || a?.description || '',
-    });
+    };
+    if (!entry.title && !entry.url && !entry.published_at && !entry.summary) continue;
+    out.push(entry);
   }
   out.sort((a, b) => (b.published_at || '').localeCompare(a.published_at || ''));
   return out.slice(0, NEWS_ARTICLES_CAP);
@@ -471,10 +504,18 @@ export function buildCompanyPhoneNumbers(
 /** Build the structured `primary_phone` object stored on Company, or undefined. */
 export function buildPrimaryPhone(
   numbers: PhoneNumberEntry[],
-): { number: string; source: string; status: string } | undefined {
+): { number: string; source: string; status: PhoneStatus } | undefined {
   const p = pickPrimary(numbers);
   if (!p) return undefined;
   return { number: p.number, source: p.type, status: p.status };
+}
+
+// True iff `v` is a plain object record (not null, not an array). Used to
+// guard the Apollo `Record<string, ...>` fields below — without the
+// `!Array.isArray` check, an unexpected array payload would type-pass
+// the `typeof === 'object'` check and surprise downstream consumers.
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +794,7 @@ export interface NormalizedCompany {
   headcount_chart: HeadcountChartEntry[];
   organization_locations: ApolloSecondaryLocation[];
   phone_numbers: PhoneNumberEntry[];
-  primary_phone?: { number: string; source: string; status: string };
+  primary_phone?: { number: string; source: string; status: PhoneStatus };
   departmental_head_count: Record<string, number>;
   persona_counts: Record<string, number>;
   intent_signal_account: Record<string, unknown>;
@@ -824,7 +865,7 @@ export interface NormalizedLead {
   phone_numbers: PhoneNumberEntry[];
   mobile_phone: string;
   direct_phone: string;
-  phone_status: string;
+  phone_status: PhoneStatus;
   time_zone: string;
   person_city: string;
   person_state: string;
@@ -970,18 +1011,18 @@ export function normalizeAccount(account: ApolloAccount): NormalizedCompany {
     headcount_chart: headcountChart,
     organization_locations: orgLocations,
     phone_numbers: phoneNumbers,
-    departmental_head_count:
-      org.departmental_head_count && typeof org.departmental_head_count === 'object'
-        ? org.departmental_head_count
-        : {},
-    persona_counts:
-      org.persona_counts && typeof org.persona_counts === 'object'
-        ? org.persona_counts
-        : {},
-    intent_signal_account:
-      org.intent_signal_account && typeof org.intent_signal_account === 'object'
-        ? org.intent_signal_account
-        : {},
+    // Reject arrays (and null) before accepting an Apollo object as a
+    // Record<...> — otherwise an unexpected array payload would type-pass
+    // `typeof === 'object'` and break consumers expecting key/value reads.
+    departmental_head_count: isPlainRecord(org.departmental_head_count)
+      ? (org.departmental_head_count as Record<string, number>)
+      : {},
+    persona_counts: isPlainRecord(org.persona_counts)
+      ? (org.persona_counts as Record<string, number>)
+      : {},
+    intent_signal_account: isPlainRecord(org.intent_signal_account)
+      ? org.intent_signal_account
+      : {},
     owned_by_organization_id: org.owned_by_organization_id || '',
   };
 
