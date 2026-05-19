@@ -55,7 +55,8 @@ export function normalizePhone(phone: string | null | undefined): string {
   if (!raw) return '';
   if (raw.startsWith('+')) {
     // Strip to digits and re-prepend a single `+` so malformed inputs like
-    // `+1+555...` collapse to one leading plus (true E.164).
+    // `+1+555...` collapse to one leading plus. The output is a stable
+    // `+<digits>` join key, not a validated E.164 number.
     const digits = raw.replace(/\D/g, '');
     return digits ? `+${digits}` : '';
   }

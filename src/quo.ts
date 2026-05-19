@@ -17,7 +17,11 @@ import { getEnv } from './env.ts';
 // HTTP
 // ---------------------------------------------------------------------------
 
-/** Base URL of the Quo (OpenPhone) v1 API. */
+/**
+ * Base host for the Quo (OpenPhone) API. Does NOT include the `/v1`
+ * version prefix — callers supply the full path (e.g. `/v1/calls`) and
+ * {@link quoFetch} concatenates them.
+ */
 export const QUO_API_BASE = 'https://api.openphone.com';
 
 const RETRY_STATUSES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
@@ -34,10 +38,12 @@ function parseRetryAfter(raw: string | null): number | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  // Seconds form: simple non-negative integer.
-  const asSeconds = Number(trimmed);
-  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-    return asSeconds * 1000;
+  // Seconds form: per RFC 9110 this is strictly a non-negative integer.
+  // Don't accept Number()'s extra forms (`"1e3"`, `"0.5"`) — those would
+  // be invalid Retry-After values and silently mis-honoring them is worse
+  // than falling through to the date parse / exponential backoff.
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed) * 1000;
   }
   // HTTP-date form: parse via Date.parse, clamp at 0 so a date already in
   // the past returns "retry immediately" rather than a negative sleep.
