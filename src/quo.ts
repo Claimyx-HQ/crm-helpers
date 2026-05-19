@@ -11,6 +11,7 @@
 // single import for the canonical enum values.
 
 import { sleep } from './text.ts';
+import { getEnv } from './env.ts';
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -37,7 +38,11 @@ export interface QuoResponse<T = Record<string, unknown>> {
 export interface QuoFetchOptions {
   /** Max retry attempts. Defaults to 6. */
   maxRetries?: number;
-  /** Sleep after each successful request (rate-limit smoothing). Defaults to 150ms. */
+  /**
+   * Sleep applied after every terminal response — successful or not — to
+   * smooth burst traffic toward Quo's 10 req/sec limit. Not applied on the
+   * retry path (the retry's own backoff covers that gap). Defaults to 150ms.
+   */
   requestGapMs?: number;
 }
 
@@ -46,9 +51,9 @@ export interface QuoFetchOptions {
  * `Retry-After` header when present and falls back to exponential backoff
  * (capped at 30s) otherwise.
  *
- * Always sleeps `requestGapMs` after a successful response — this is the
- * shared cooldown that keeps parallel sibling calls under Quo's 10 req/sec
- * limit.
+ * On every terminal response (whether `ok` or a non-retry 4xx) sleeps
+ * `requestGapMs` before returning — this is the shared cooldown that keeps
+ * parallel sibling calls under Quo's 10 req/sec limit.
  *
  * Errors are returned as `{ ok: false, status: 0 | 4xx | 5xx, data: { message } }`
  * rather than thrown, so the caller can decide per-endpoint whether a 404
@@ -216,15 +221,4 @@ export function isAuthorizedScheduledRun(req: Request): boolean {
   if (!expected) return false;
   const provided = req.headers.get('x-webhook-secret');
   return Boolean(provided) && provided === expected;
-}
-
-// Local copy of the runtime-agnostic env reader. Kept private to this
-// module to avoid leaking a cross-module dependency on `base44.ts`'s
-// internals; both modules use the same shape.
-function getEnv(key: string): string {
-  const denoGlobal = (globalThis as { Deno?: { env?: { get?: (k: string) => string | undefined } } }).Deno;
-  if (denoGlobal?.env?.get) return denoGlobal.env.get(key) || '';
-  const nodeProcess = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
-  if (nodeProcess?.env) return nodeProcess.env[key] || '';
-  return '';
 }
