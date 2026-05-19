@@ -15,6 +15,22 @@
 import { sleep } from './text.ts';
 
 // ---------------------------------------------------------------------------
+// Runtime env access
+// ---------------------------------------------------------------------------
+
+// Read an environment variable across Deno and Node runtimes. The package's
+// primary consumer is Base44 (Deno), but the README also advertises Node
+// support — without this shim, any Node consumer crashes on the bare
+// `Deno.env.get` reference below.
+function getEnv(key: string): string {
+  const denoGlobal = (globalThis as { Deno?: { env?: { get?: (k: string) => string | undefined } } }).Deno;
+  if (denoGlobal?.env?.get) return denoGlobal.env.get(key) || '';
+  const nodeProcess = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  if (nodeProcess?.env) return nodeProcess.env[key] || '';
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // Chunked-function retry
 // ---------------------------------------------------------------------------
 
@@ -142,7 +158,7 @@ export function isAuthorizedOrchestratorCall(
   payload: Record<string, unknown>,
 ): boolean {
   if (payload?.triggered_by !== 'orchestrator') return false;
-  const expected = Deno.env.get('INTERNAL_ORCHESTRATOR_SECRET') || '';
+  const expected = getEnv('INTERNAL_ORCHESTRATOR_SECRET');
   if (!expected) return false;
   const provided =
     req.headers.get('x-internal-secret') ||
@@ -159,7 +175,7 @@ export function isAuthorizedOrchestratorCall(
  * avoid the empty no-op call.
  */
 export function orchestratorPayload(): Record<string, string> {
-  const secret = Deno.env.get('INTERNAL_ORCHESTRATOR_SECRET') || '';
+  const secret = getEnv('INTERNAL_ORCHESTRATOR_SECRET');
   if (!secret) return {};
   return { triggered_by: 'orchestrator', _internal_secret: secret };
 }
@@ -170,7 +186,7 @@ export function orchestratorPayload(): Record<string, string> {
  * firing them and flipping queued rows to a state that will never be acted on.
  */
 export function chainingEnabled(): boolean {
-  return !!Deno.env.get('INTERNAL_ORCHESTRATOR_SECRET');
+  return !!getEnv('INTERNAL_ORCHESTRATOR_SECRET');
 }
 
 // ---------------------------------------------------------------------------
