@@ -24,6 +24,30 @@ const RETRY_STATUSES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
 const DEFAULT_MAX_RETRIES = 6;
 const DEFAULT_REQUEST_GAP_MS = 150;
 
+/**
+ * Parse an HTTP `Retry-After` header value into a backoff-millisecond
+ * count. Per RFC 9110, the header is either a non-negative integer (seconds)
+ * OR an HTTP-date — this handles both. Returns `null` when the header is
+ * missing or unparseable, so the caller can fall back to exponential backoff.
+ */
+function parseRetryAfter(raw: string | null): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Seconds form: simple non-negative integer.
+  const asSeconds = Number(trimmed);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return asSeconds * 1000;
+  }
+  // HTTP-date form: parse via Date.parse, clamp at 0 so a date already in
+  // the past returns "retry immediately" rather than a negative sleep.
+  const asTs = Date.parse(trimmed);
+  if (Number.isFinite(asTs)) {
+    return Math.max(0, asTs - Date.now());
+  }
+  return null;
+}
+
 /** Response envelope returned by {@link quoFetch}. */
 export interface QuoResponse<T = Record<string, unknown>> {
   /** True iff the HTTP status was 2xx. */
@@ -36,7 +60,11 @@ export interface QuoResponse<T = Record<string, unknown>> {
 
 /** Optional knobs for {@link quoFetch}. */
 export interface QuoFetchOptions {
-  /** Max retry attempts. Defaults to 6. */
+  /**
+   * Max retries AFTER the initial request, matching HTTP/RFC convention.
+   * `maxRetries = 6` means 1 initial attempt + up to 6 retries = 7 total
+   * attempts before bailing. Defaults to 6.
+   */
   maxRetries?: number;
   /**
    * Sleep applied after every terminal response — successful or not — to
@@ -79,10 +107,8 @@ export async function quoFetch<T = Record<string, unknown>>(
         headers: { Authorization: apiKey },
       });
       if (RETRY_STATUSES.has(response.status) && attempt < maxRetries) {
-        const retryAfter = Number(response.headers.get('retry-after')) || 0;
-        const backoff = retryAfter > 0
-          ? retryAfter * 1000
-          : Math.min(30_000, 2 ** attempt * 1000);
+        const backoff = parseRetryAfter(response.headers.get('retry-after'))
+          ?? Math.min(30_000, 2 ** attempt * 1000);
         // Cancel the unread body so the underlying connection can be
         // released back to keep-alive instead of being held open by an
         // un-drained stream — matters under sustained 429s.
