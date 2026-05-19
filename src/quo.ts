@@ -172,12 +172,20 @@ export type CallSentiment = 'positive' | 'neutral' | 'negative';
  * Bucket an arbitrary Quo sentiment string into the narrow set the
  * CallActivity schema accepts. Unknown / missing values collapse to
  * `'neutral'` so we never violate the schema enum.
+ *
+ * Uses word-boundary matching so prefix collisions like "unhappy" don't
+ * spuriously match `happy`. Quo emits single-word sentiment labels in
+ * practice — phrase-form inputs like "not positive" still match the
+ * keyword and aren't negation-detected; treat negation in the caller if
+ * Quo's contract ever changes.
  */
 export function normalizeSentiment(raw: unknown): CallSentiment {
   if (!raw) return 'neutral';
   const value = String(raw).toLowerCase();
-  if (/(positive|happy|excited|enthusiastic|warm)/.test(value)) return 'positive';
-  if (/(negative|angry|frustrat|upset|hostile)/.test(value)) return 'negative';
+  if (/\b(positive|happy|excited|enthusiastic|warm)\b/.test(value)) return 'positive';
+  // `frustrat` is a stem (matches "frustrated", "frustrating", "frustration");
+  // the leading `\b` still blocks prefix collisions, no trailing boundary.
+  if (/\b(negative|angry|upset|hostile)\b|\bfrustrat/.test(value)) return 'negative';
   return 'neutral';
 }
 
