@@ -25,7 +25,21 @@ import { getEnv } from './env.ts';
 export const QUO_API_BASE = 'https://api.openphone.com';
 
 const RETRY_STATUSES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
-const DEFAULT_MAX_RETRIES = 6;
+
+/**
+ * Default retry count. Chosen so the worst-case total backoff fits inside
+ * Base44's `DEFAULT_CHUNK_TIME_BUDGET_MS` (55s).
+ *
+ * With `2 ** attempt * 1000` capped per-sleep at 30s, the worst-case
+ * cumulative backoff is `1 + 2 + 4 + 8 + 16 = 31s` — well under the
+ * chunk budget so the function still has time to record progress before
+ * the gateway timeout. Bumping to 6 would push worst-case to 61s and
+ * blow the budget.
+ *
+ * Callers in a Node / non-chunked context can override with a larger
+ * value via `QuoFetchOptions.maxRetries`.
+ */
+const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_REQUEST_GAP_MS = 150;
 
 /**
@@ -68,8 +82,10 @@ export interface QuoResponse<T = Record<string, unknown>> {
 export interface QuoFetchOptions {
   /**
    * Max retries AFTER the initial request, matching HTTP/RFC convention.
-   * `maxRetries = 6` means 1 initial attempt + up to 6 retries = 7 total
-   * attempts before bailing. Defaults to 6.
+   * `maxRetries = 5` means 1 initial attempt + up to 5 retries = 6 total
+   * attempts before bailing. Defaults to 5 — chosen so the worst-case
+   * cumulative backoff (1+2+4+8+16 = 31s) fits inside Base44's 55s chunk
+   * budget. See {@link DEFAULT_MAX_RETRIES} comment for the math.
    */
   maxRetries?: number;
   /**
