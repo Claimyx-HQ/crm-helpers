@@ -37,6 +37,26 @@ export function normalizeOrgName(name: string | null | undefined): string {
 }
 
 /**
+ * Coerce a phone string to E.164. Bare 10-digit inputs are treated as US
+ * (`+1` prefix added); already-prefixed inputs (`+44 20 ...`) keep their
+ * country code and have non-digits stripped. Returns `''` for empty / non-
+ * digit-bearing input.
+ *
+ * Used as the join key across Apollo (which returns `+1...` already), Quo
+ * (which sometimes returns raw 10-digit), and user-entered phone numbers
+ * — they all collapse to the same E.164 form so `Lead.filter(phone)`
+ * lookups match consistently.
+ */
+export function normalizePhone(phone: string | null | undefined): string {
+  const raw = String(phone || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('+')) return raw.replace(/[^+\d]/g, '');
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+}
+
+/**
  * Compose a "City, State, Country" string from a partial address object,
  * dropping empty fields.
  */
