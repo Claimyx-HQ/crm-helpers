@@ -24,7 +24,7 @@ const DEFAULT_MAX_RETRIES = 6;
 const DEFAULT_REQUEST_GAP_MS = 150;
 
 /** Response envelope returned by {@link quoFetch}. */
-export interface QuoResponse<T = unknown> {
+export interface QuoResponse<T = Record<string, unknown>> {
   /** True iff the HTTP status was 2xx. */
   ok: boolean;
   /** HTTP status code. 0 indicates the request never completed (network error). */
@@ -54,7 +54,7 @@ export interface QuoFetchOptions {
  * rather than thrown, so the caller can decide per-endpoint whether a 404
  * is fatal or a soft miss.
  */
-export async function quoFetch<T = unknown>(
+export async function quoFetch<T = Record<string, unknown>>(
   path: string,
   apiKey: string,
   options: QuoFetchOptions = {},
@@ -72,6 +72,10 @@ export async function quoFetch<T = unknown>(
         const backoff = retryAfter > 0
           ? retryAfter * 1000
           : Math.min(30_000, 2 ** attempt * 1000);
+        // Cancel the unread body so the underlying connection can be
+        // released back to keep-alive instead of being held open by an
+        // un-drained stream — matters under sustained 429s.
+        await response.body?.cancel().catch(() => {});
         await sleep(backoff);
         continue;
       }
