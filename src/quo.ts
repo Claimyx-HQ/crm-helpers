@@ -137,8 +137,11 @@ export async function quoFetch<T = Record<string, unknown>>(
         const backoff = Math.min(30_000, requested);
         // Cancel the unread body so the underlying connection can be
         // released back to keep-alive instead of being held open by an
-        // un-drained stream — matters under sustained 429s.
-        await response.body?.cancel().catch(() => {});
+        // un-drained stream — matters under sustained 429s. Chain the
+        // optional on `.catch` too: in Fetch impls that report
+        // `response.body === null` (some Node versions), `body?.cancel()`
+        // is `undefined` and `.catch` would throw without the second `?`.
+        await response.body?.cancel()?.catch(() => {});
         await sleep(backoff);
         continue;
       }
