@@ -66,10 +66,16 @@ export async function quoFetch<T = Record<string, unknown>>(
 ): Promise<QuoResponse<T>> {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const requestGapMs = options.requestGapMs ?? DEFAULT_REQUEST_GAP_MS;
+  // Mirror apolloPost: accept full URLs verbatim, otherwise treat `path` as
+  // relative to QUO_API_BASE and auto-prefix `/` so callers can pass either
+  // `/v1/calls` or `v1/calls` without producing `apiv1/calls`.
+  const url = path.startsWith('http')
+    ? path
+    : `${QUO_API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      const response = await fetch(`${QUO_API_BASE}${path}`, {
+      const response = await fetch(url, {
         headers: { Authorization: apiKey },
       });
       if (RETRY_STATUSES.has(response.status) && attempt < maxRetries) {
