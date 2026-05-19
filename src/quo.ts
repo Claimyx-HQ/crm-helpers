@@ -68,7 +68,7 @@ export async function quoFetch<T = Record<string, unknown>>(
   const requestGapMs = options.requestGapMs ?? DEFAULT_REQUEST_GAP_MS;
   // Mirror apolloPost: accept full URLs verbatim, otherwise treat `path` as
   // relative to QUO_API_BASE and auto-prefix `/` so callers can pass either
-  // `/v1/calls` or `v1/calls` without producing `apiv1/calls`.
+  // `/v1/calls` or `v1/calls` without producing `api.openphone.comv1/calls`.
   const url = path.startsWith('http')
     ? path
     : `${QUO_API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
@@ -91,6 +91,12 @@ export async function quoFetch<T = Record<string, unknown>>(
         continue;
       }
       const data = await response.json().catch(() => ({})) as T & { message?: string; error?: string };
+      // On non-2xx, guarantee `data.message` is set so callers can surface
+      // a useful error string without inspecting `data.error` or the
+      // status code. Don't overwrite a message the body already provided.
+      if (!response.ok && !data.message) {
+        data.message = `Quo request failed: ${response.status} ${response.statusText || ''}`.trim();
+      }
       await sleep(requestGapMs);
       return { ok: response.ok, status: response.status, data };
     } catch (error) {
