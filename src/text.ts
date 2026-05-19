@@ -37,6 +37,34 @@ export function normalizeOrgName(name: string | null | undefined): string {
 }
 
 /**
+ * Coerce a phone string to a stable `+<digits>` join key. Bare 10-digit
+ * inputs are treated as US (`+1` prefix added); already-prefixed inputs
+ * (`+44 20 ...`) keep their country code and have non-digit chars stripped
+ * (including stray `+`s, so malformed `+1+555...` collapses to one leading
+ * plus). Returns `''` for empty / non-digit-bearing input.
+ *
+ * NOT a strict E.164 validator — 7-digit local numbers and inputs that
+ * include extensions or other digits still produce a `+<digits>` value.
+ * The intent is a deterministic join key across data sources (Apollo, Quo,
+ * user-entered numbers), not validation. If you need to *validate* an
+ * E.164 number for an outbound API call, layer a length / country-prefix
+ * check on top.
+ */
+export function normalizePhone(phone: string | null | undefined): string {
+  const raw = String(phone || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('+')) {
+    // Strip to digits and re-prepend a single `+` so malformed inputs like
+    // `+1+555...` collapse to one leading plus (true E.164).
+    const digits = raw.replace(/\D/g, '');
+    return digits ? `+${digits}` : '';
+  }
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+}
+
+/**
  * Compose a "City, State, Country" string from a partial address object,
  * dropping empty fields.
  */
