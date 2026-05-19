@@ -13,22 +13,7 @@
 //     access — the {@link isAuthorizedOrchestratorCall} pattern gates that.
 
 import { sleep } from './text.ts';
-
-// ---------------------------------------------------------------------------
-// Runtime env access
-// ---------------------------------------------------------------------------
-
-// Read an environment variable across Deno and Node runtimes. The package's
-// primary consumer is Base44 (Deno), but the README also advertises Node
-// support — without this shim, any Node consumer crashes on the bare
-// `Deno.env.get` reference below.
-function getEnv(key: string): string {
-  const denoGlobal = (globalThis as { Deno?: { env?: { get?: (k: string) => string | undefined } } }).Deno;
-  if (denoGlobal?.env?.get) return denoGlobal.env.get(key) || '';
-  const nodeProcess = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
-  if (nodeProcess?.env) return nodeProcess.env[key] || '';
-  return '';
-}
+import { getEnv } from './env.ts';
 
 // ---------------------------------------------------------------------------
 // Chunked-function retry
