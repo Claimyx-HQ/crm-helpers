@@ -113,8 +113,12 @@ export async function quoFetch<T = Record<string, unknown>>(
         headers: { Authorization: apiKey },
       });
       if (RETRY_STATUSES.has(response.status) && attempt < maxRetries) {
-        const backoff = parseRetryAfter(response.headers.get('retry-after'))
-          ?? Math.min(30_000, 2 ** attempt * 1000);
+        // Cap both Retry-After and the exponential fallback at 30s so a
+        // pathological server response (e.g. an HTTP-date far in the
+        // future) can't stall a worker past its function time budget.
+        const requested = parseRetryAfter(response.headers.get('retry-after'))
+          ?? 2 ** attempt * 1000;
+        const backoff = Math.min(30_000, requested);
         // Cancel the unread body so the underlying connection can be
         // released back to keep-alive instead of being held open by an
         // un-drained stream — matters under sustained 429s.
