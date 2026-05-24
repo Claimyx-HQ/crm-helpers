@@ -71,8 +71,10 @@ export function isDeadlineError(err: unknown): boolean {
  * Uses **full jitter** (AWS-recommended) so parallel callers don't realign on
  * retry: each sleep is `random(0, min(20s, 1500 * 2^attempt))`. Honors a
  * `Retry-After` header (seconds) on the error if present, which Base44 may
- * send to indicate when the next call may succeed — the jittered backoff is
- * still applied on top as a floor.
+ * send to indicate when the next call may succeed — Retry-After acts as a
+ * floor on the wait, with an additional small randomized spread on top so
+ * parallel callers receiving the same Retry-After value still de-correlate
+ * instead of realigning at the floor.
  *
  * - Only retries on 429-class errors. Other errors bail after the second
  *   attempt so we don't burn the chunk budget on a deterministic failure.
@@ -118,11 +120,19 @@ export async function withRetry<T>(
       const exp = Math.min(cap, 1500 * Math.pow(2, attempt));
       const jittered = Math.floor(Math.random() * exp);
 
-      // If the response carried a Retry-After header (seconds), use it as
-      // a floor on the wait — server is telling us when the next call may
-      // succeed. Jitter still applied on top via Math.max.
+      // If the response carried a Retry-After header (seconds), use it as a
+      // floor on the wait — server is telling us when the next call may
+      // succeed. We add a small extra jitter window on top so parallel
+      // callers receiving the same Retry-After value still de-correlate
+      // instead of realigning at the floor. The added jitter is
+      // `random(0, min(retryAfterMs, 1000))` — proportional to the server's
+      // own hint, capped at 1s extra so we don't blow the budget on a small
+      // Retry-After.
       const retryAfterMs = parseRetryAfterMs(error);
-      const backoff = Math.max(jittered, retryAfterMs);
+      const retryAfterJitter = retryAfterMs > 0
+        ? retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000))
+        : 0;
+      const backoff = Math.max(jittered, retryAfterJitter);
 
       if (isRateLimit) {
         state.rateLimitUntil = Math.max(
