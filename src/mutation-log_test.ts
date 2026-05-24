@@ -1,8 +1,10 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0';
 import {
   computeDiff,
+  type CreatableEntity,
   defaultFullSnapshots,
   type FieldChange,
+  loggedCreate,
   loggedUpdate,
   type LogEntity,
   type MutationLogRecord,
@@ -266,4 +268,88 @@ Deno.test('loggedUpdate: no-op update (no field changes) still writes a log row'
   // human click save with no edits?" telemetry.
   assertEquals(logRows.length, 1);
   assertEquals(logRows[0].field_changes, {});
+});
+
+Deno.test('loggedCreate: creates entity AND writes MutationLog row', async () => {
+  const created: Record<string, unknown>[] = [];
+  const logRows: MutationLogRecord[] = [];
+  const entity: CreatableEntity = {
+    async create(data) {
+      const row = { id: 'lead_new', ...data };
+      created.push(row);
+      return row;
+    },
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  const result = await loggedCreate(entity, { stage: 'New', email: 'x@y.com' }, {
+    source: 'import',
+    actor: 'importCompaniesFromFile',
+    mutationLog,
+  });
+  assertEquals(result.id, 'lead_new');
+  assertEquals(logRows.length, 1);
+  assertEquals(logRows[0].mutation_type, 'create');
+  assertEquals(logRows[0].entity_id, 'lead_new');
+  assertEquals(logRows[0].source, 'import');
+  assertEquals(logRows[0].field_changes, {});  // empty for creates
+});
+
+Deno.test('loggedCreate: after_snapshot ALWAYS attached regardless of source', async () => {
+  const logRows: MutationLogRecord[] = [];
+  const entity: CreatableEntity = {
+    async create(data) { return { id: 'lead_new', ...data }; },
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  // 'user' source's default is fullSnapshots=false for updates, but creates
+  // always snapshot the after-state for replay.
+  await loggedCreate(entity, { stage: 'New' }, {
+    source: 'user',
+    actor: 'u_1',
+    mutationLog,
+  });
+  assertEquals(logRows[0].after_snapshot?.stage, 'New');
+  assertEquals(logRows[0].before_snapshot, undefined);  // no before state on create
+});
+
+Deno.test('loggedCreate: log-write failure warns, does not throw', async () => {
+  const entity: CreatableEntity = {
+    async create(data) { return { id: 'lead_new', ...data }; },
+  };
+  const failingLog: LogEntity = {
+    async create() { throw new Error('log failed'); },
+  };
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args); };
+  try {
+    const result = await loggedCreate(entity, { stage: 'New' }, {
+      source: 'user',
+      actor: 'u_1',
+      mutationLog: failingLog,
+    });
+    assertEquals(result.id, 'lead_new');
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEquals(warnings.length >= 1, true);
+});
+
+Deno.test('loggedCreate: entity without id field — log row entity_id is empty string', async () => {
+  // Edge case: if Entity.create returns a row without an `id` field, we log
+  // entity_id as ''. Better than throwing — the create itself succeeded.
+  const logRows: MutationLogRecord[] = [];
+  const entity: CreatableEntity = {
+    async create(data) { return { ...data }; },  // no id
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  await loggedCreate(entity, { stage: 'New' }, {
+    source: 'user', actor: 'u_1', mutationLog,
+  });
+  assertEquals(logRows[0].entity_id, '');
 });

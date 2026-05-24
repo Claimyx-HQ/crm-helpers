@@ -162,3 +162,43 @@ export async function loggedUpdate<T extends UpdatableEntity>(
 
   return updated;
 }
+
+/**
+ * Wrap entity.create with a MutationLog write. `field_changes` is always
+ * an empty object (no before state). `after_snapshot` is ALWAYS attached
+ * regardless of source — creates are rare enough that the snapshot cost is
+ * amortized, and replay-after-delete benefits from the full row.
+ *
+ * Returns the created entity. Log-write failures are warned to console.warn
+ * but do NOT throw.
+ */
+export async function loggedCreate<T extends CreatableEntity>(
+  entity: T,
+  data: Record<string, unknown>,
+  opts: LoggedOptions,
+): Promise<Record<string, unknown>> {
+  const created = await entity.create(data);
+  const entityType = opts.entityType ?? entity.constructor.name;
+  const idValue = created.id;
+  const entityId = typeof idValue === 'string' ? idValue : '';
+
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: entityId,
+    mutation_type: 'create',
+    source: opts.source,
+    actor_id: opts.actor,
+    field_changes: {},
+    after_snapshot: created,
+  };
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${entityId} (create): ${err}`,
+    );
+  }
+
+  return created;
+}
