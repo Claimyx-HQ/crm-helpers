@@ -38,19 +38,33 @@ Deno.test('computeDiff: only diffs fields present in `after`', () => {
   });
 });
 
-Deno.test('computeDiff: handles new field in after (from: undefined)', () => {
+Deno.test('computeDiff: handles new field in after (from normalized to null)', () => {
+  // A field absent from `before` is treated as null (not undefined) so the
+  // diff entry is JSON-safe.
   const before = { stage: 'New' };
   const after = { stage: 'New', new_field: 'value' };
   assertEquals(computeDiff(before, after), {
-    new_field: { from: undefined, to: 'value' },
+    new_field: { from: null, to: 'value' },
   });
 });
 
-Deno.test('computeDiff: handles null vs undefined as different values', () => {
-  const before = { phone: null };
-  const after = { phone: undefined };
+Deno.test('computeDiff: null and undefined are equivalent (JSON-safe normalization)', () => {
+  // Both null and undefined normalize to null upstream of the JSON.stringify
+  // comparison, so a field that was null and is now undefined (or vice
+  // versa) produces an empty diff — they round-trip to the same Base44
+  // value anyway.
+  assertEquals(computeDiff({ phone: null }, { phone: undefined }), {});
+  assertEquals(computeDiff({ phone: undefined }, { phone: null }), {});
+});
+
+Deno.test('computeDiff: explicit unset (value → null) is recorded', () => {
+  // Genuinely setting a field from a value to null IS a change worth
+  // recording — the previous null-vs-undefined test conflated absence with
+  // explicit null; this one isolates the real case.
+  const before = { phone: '+15551234567' };
+  const after = { phone: null };
   assertEquals(computeDiff(before, after), {
-    phone: { from: null, to: undefined },
+    phone: { from: '+15551234567', to: null },
   });
 });
 
@@ -463,6 +477,21 @@ Deno.test('loggedDelete: get failure means we cannot capture before_snapshot —
     async get() { throw new Error('not found'); },
   };
   const logRows: MutationLogRecord[] = [];
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  await loggedDelete(entity, 'lead_doomed', {
+    source: 'user', actor: 'u_1', mutationLog,
+  });
+  assertEquals(logRows[0].before_snapshot, {});
+});
+
+Deno.test('loggedDelete: entity.get returning null falls back to empty before_snapshot', async () => {
+  const logRows: MutationLogRecord[] = [];
+  const entity: DeletableEntity = {
+    async delete() {},
+    async get() { return null as unknown as Record<string, unknown>; },
+  };
   const mutationLog: LogEntity = {
     async create(record) { logRows.push(record); return record; },
   };

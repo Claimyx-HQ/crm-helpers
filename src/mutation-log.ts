@@ -4,9 +4,13 @@
 
 /**
  * A single field's change in a MutationLog row. `from` is the prior value
- * (or `undefined` if the field is new). `to` is the new value. Returned in
- * a `Record<string, FieldChange>` by `computeDiff` and stored under
- * `MutationLogRecord.field_changes`.
+ * (`null` if the field was unset). `to` is the new value (`null` if the
+ * caller explicitly unset it). Returned in a `Record<string, FieldChange>`
+ * by `computeDiff` and stored under `MutationLogRecord.field_changes`.
+ *
+ * Both values are JSON-safe — `undefined` is normalized to `null` upstream
+ * in `computeDiff` so the record round-trips through Base44's JSON storage
+ * intact.
  */
 export interface FieldChange {
   from: unknown;
@@ -28,6 +32,12 @@ export interface FieldChange {
  * Base44 round-trips JSON with stable key order so this is low risk in
  * practice, but a manually-constructed `before` object could mismatch a
  * Base44-read `after` if the keys differ.
+ *
+ * `undefined` values are normalized to `null` in both inputs and outputs so
+ * the diff is JSON-safe (the wire shape is persisted to a Base44 entity).
+ * Side effect: "field was unset" and "field was set to null" become
+ * indistinguishable in field_changes — acceptable because Base44 stores
+ * both as null anyway.
  */
 export function computeDiff(
   before: Record<string, unknown>,
@@ -35,8 +45,14 @@ export function computeDiff(
 ): Record<string, FieldChange> {
   const diff: Record<string, FieldChange> = {};
   for (const key of Object.keys(after)) {
-    const beforeVal = before[key];
-    const afterVal = after[key];
+    // Normalize undefined → null so the diff round-trips through JSON. The
+    // wire shape (MutationLogRecord) is serialized to a Base44 entity;
+    // undefined values would be dropped on serialize, silently corrupting
+    // field_changes. After normalization, "field unset before" and "field
+    // set to null before" are indistinguishable — acceptable because Base44
+    // already stores both as null.
+    const beforeVal = before[key] === undefined ? null : before[key];
+    const afterVal = after[key] === undefined ? null : after[key];
     if (JSON.stringify(beforeVal) !== JSON.stringify(afterVal)) {
       diff[key] = { from: beforeVal, to: afterVal };
     }
@@ -162,7 +178,8 @@ export async function loggedUpdate<T extends UpdatableEntity>(
     await opts.mutationLog.create(record);
   } catch (err) {
     console.warn(
-      `[mutation-log] failed to write MutationLog row for ${entityType}:${id}: ${err}`,
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id}:`,
+      err,
     );
   }
 
@@ -207,7 +224,8 @@ export async function loggedCreate<T extends CreatableEntity>(
     await opts.mutationLog.create(record);
   } catch (err) {
     console.warn(
-      `[mutation-log] failed to write MutationLog row for ${entityType}:${entityId} (create): ${err}`,
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${entityId} (create):`,
+      err,
     );
   }
 
@@ -231,7 +249,12 @@ export async function loggedDelete<T extends DeletableEntity>(
 ): Promise<void> {
   let before: Record<string, unknown> = {};
   try {
-    before = await entity.get(id);
+    const captured = await entity.get(id);
+    if (captured != null && typeof captured === 'object') {
+      before = captured as Record<string, unknown>;
+    }
+    // If captured is null/undefined/non-object: leave before as {} (the
+    // documented fallback). Mirrors the "entity.get throws" fallback path.
   } catch (_err) {
     // Capture failure — keep going with empty before_snapshot.
   }
@@ -253,7 +276,8 @@ export async function loggedDelete<T extends DeletableEntity>(
     await opts.mutationLog.create(record);
   } catch (err) {
     console.warn(
-      `[mutation-log] failed to write MutationLog row for ${entityType}:${id} (delete): ${err}`,
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id} (delete):`,
+      err,
     );
   }
 }
