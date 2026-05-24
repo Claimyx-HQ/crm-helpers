@@ -142,12 +142,14 @@ export type NextActionType = typeof NEXT_ACTION_TYPES[number];
 export const DEFAULT_NEXT_ACTION: NextActionType = 'no_action';
 
 /**
- * UI-friendly labels for each next-action type.
+ * UI-friendly labels for each next-action type. Use these in the Queue Wrap
+ * dialog (the "what should happen next" picker), the Follow-ups view, and
+ * anywhere else a next-action is rendered to a rep.
  */
 export const NEXT_ACTION_LABEL: Record<NextActionType, string> = {
   callback: 'Call back',
   send_info: 'Send info',
-  book_demo: 'Book demo',
+  book_demo: 'Book a demo',
   nurture: 'Nurture',
   dnc: 'Do not contact',
   no_action: 'No action',
