@@ -44,7 +44,7 @@ export function computeDiff(
   return diff;
 }
 
-import type { WriteSource } from './activity.ts';
+import { stampActivity, type WriteSource } from './activity.ts';
 
 /**
  * Wire shape written to the sales-crm MutationLog entity. The sales-crm
@@ -109,8 +109,6 @@ export function defaultFullSnapshots(source: WriteSource): boolean {
   return source === 'llm' || source === 'bulk_admin' || source === 'apollo_sync';
 }
 
-import { stampActivity } from './activity.ts';
-
 /**
  * Wrap entity.update with a MutationLog write. Calls stampActivity to
  * enforce D2 (only `source === 'user'` stamps last_activity_at; non-user
@@ -119,6 +117,14 @@ import { stampActivity } from './activity.ts';
  * Returns the updated entity. Log-write failures are warned to console.warn
  * but do NOT throw — the entity write has already landed and we don't roll
  * back. Integrators that need stricter behavior can layer a retry on top.
+ *
+ * `field_changes` is diffed against the caller's `updates` object, not
+ * against the stamped payload sent to storage — so auto-injected fields
+ * like `last_activity_at` do not appear in `field_changes` even though
+ * they are written to the entity. This is intentional: the audit log
+ * should reflect caller intent, not internal bookkeeping. An explicit
+ * `last_activity_at` value passed by the caller WILL appear (it's part
+ * of intent).
  */
 export async function loggedUpdate<T extends UpdatableEntity>(
   entity: T,
@@ -181,6 +187,11 @@ export async function loggedCreate<T extends CreatableEntity>(
   const entityType = opts.entityType ?? entity.constructor.name;
   const idValue = created.id;
   const entityId = typeof idValue === 'string' ? idValue : '';
+  if (entityId === '') {
+    console.warn(
+      `[mutation-log] loggedCreate: ${entityType}.create returned no id field — entity_id logged as empty string`,
+    );
+  }
 
   const record: MutationLogRecord = {
     entity_type: entityType,

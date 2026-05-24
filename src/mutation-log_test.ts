@@ -272,6 +272,34 @@ Deno.test('loggedUpdate: no-op update (no field changes) still writes a log row'
   assertEquals(logRows[0].field_changes, {});
 });
 
+Deno.test('loggedUpdate: order is get → update → log', async () => {
+  // Regression guard: if a future refactor moves the log write before the
+  // entity update returns, after_snapshot would be stale. Lock the order.
+  const events: string[] = [];
+  const entity: UpdatableEntity = {
+    async update(id, data) {
+      events.push('update');
+      return { id, ...data };
+    },
+    async get() {
+      events.push('get');
+      return { id: 'x', stage: 'New' };
+    },
+  };
+  const mutationLog: LogEntity = {
+    async create(_record) {
+      events.push('log');
+      return _record;
+    },
+  };
+  await loggedUpdate(entity, 'x', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u',
+    mutationLog,
+  });
+  assertEquals(events, ['get', 'update', 'log']);
+});
+
 Deno.test('loggedCreate: creates entity AND writes MutationLog row', async () => {
   const created: Record<string, unknown>[] = [];
   const logRows: MutationLogRecord[] = [];
@@ -354,6 +382,28 @@ Deno.test('loggedCreate: entity without id field — log row entity_id is empty 
     source: 'user', actor: 'u_1', mutationLog,
   });
   assertEquals(logRows[0].entity_id, '');
+});
+
+Deno.test('loggedCreate: warns when created entity has no id field', async () => {
+  const entity: CreatableEntity = {
+    async create(data) { return { ...data }; },  // no id
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { return record; },
+  };
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args); };
+  try {
+    await loggedCreate(entity, { stage: 'New' }, {
+      source: 'user', actor: 'u_1', mutationLog,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  // Two warnings would be wrong (one for missing id, none for log failure).
+  // One warning is correct: the missing-id warn fires; the log write succeeded.
+  assertEquals(warnings.length, 1);
 });
 
 Deno.test('loggedDelete: deletes entity AND writes MutationLog row with before_snapshot', async () => {
