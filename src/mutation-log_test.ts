@@ -1,5 +1,10 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0';
-import { computeDiff } from './mutation-log.ts';
+import {
+  computeDiff,
+  defaultFullSnapshots,
+  type FieldChange,
+  type MutationLogRecord,
+} from './mutation-log.ts';
 
 Deno.test('computeDiff: empty diff when nothing changed', () => {
   const before = { stage: 'New', owner: 'u1' };
@@ -56,4 +61,42 @@ Deno.test('computeDiff: array change detected', () => {
   assertEquals(computeDiff(before, after), {
     tags: { from: ['a', 'b'], to: ['a', 'b', 'c'] },
   });
+});
+
+Deno.test('FieldChange + computeDiff: typed shape is stable', () => {
+  // The diff entries are typed as FieldChange. Asserting via the named type
+  // would catch a future rename of `from` / `to`.
+  const diff = computeDiff({ stage: 'New' }, { stage: 'Qualified' });
+  const change: FieldChange = diff.stage;
+  assertEquals(change.from, 'New');
+  assertEquals(change.to, 'Qualified');
+});
+
+Deno.test('MutationLogRecord type — required fields locked at compile time', () => {
+  // If a required field is renamed or removed in mutation-log.ts, this
+  // assignment fails to type-check and the build breaks. The runtime
+  // assertion is incidental — the compile check is the contract.
+  const r: MutationLogRecord = {
+    entity_type: 'Lead',
+    entity_id: 'lead_123',
+    mutation_type: 'update',
+    source: 'user',
+    actor_id: 'u_1',
+    field_changes: { stage: { from: 'New', to: 'Qualified' } },
+  };
+  assertEquals(r.entity_type, 'Lead');
+  assertEquals(r.mutation_type, 'update');
+});
+
+Deno.test('defaultFullSnapshots: llm / bulk_admin / apollo_sync → true', () => {
+  assertEquals(defaultFullSnapshots('llm'), true);
+  assertEquals(defaultFullSnapshots('bulk_admin'), true);
+  assertEquals(defaultFullSnapshots('apollo_sync'), true);
+});
+
+Deno.test('defaultFullSnapshots: user / cron / quo_sync / import → false', () => {
+  assertEquals(defaultFullSnapshots('user'), false);
+  assertEquals(defaultFullSnapshots('cron'), false);
+  assertEquals(defaultFullSnapshots('quo_sync'), false);
+  assertEquals(defaultFullSnapshots('import'), false);
 });
