@@ -3,8 +3,10 @@ import {
   computeDiff,
   type CreatableEntity,
   defaultFullSnapshots,
+  type DeletableEntity,
   type FieldChange,
   loggedCreate,
+  loggedDelete,
   loggedUpdate,
   type LogEntity,
   type MutationLogRecord,
@@ -352,4 +354,91 @@ Deno.test('loggedCreate: entity without id field — log row entity_id is empty 
     source: 'user', actor: 'u_1', mutationLog,
   });
   assertEquals(logRows[0].entity_id, '');
+});
+
+Deno.test('loggedDelete: deletes entity AND writes MutationLog row with before_snapshot', async () => {
+  const store: Record<string, Record<string, unknown>> = {
+    lead_doomed: { id: 'lead_doomed', stage: 'Closed Lost' },
+  };
+  const logRows: MutationLogRecord[] = [];
+  const entity: DeletableEntity = {
+    async delete(id) { delete store[id]; },
+    async get(id) { return store[id]; },
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  await loggedDelete(entity, 'lead_doomed', {
+    source: 'user',
+    actor: 'u_1',
+    mutationLog,
+  });
+  assertEquals(store.lead_doomed, undefined);
+  assertEquals(logRows.length, 1);
+  assertEquals(logRows[0].mutation_type, 'delete');
+  assertEquals(logRows[0].entity_id, 'lead_doomed');
+  // before_snapshot MUST be present — destructive operation, need replay.
+  assertEquals(logRows[0].before_snapshot?.stage, 'Closed Lost');
+});
+
+Deno.test('loggedDelete: before_snapshot present even when fullSnapshots=false', async () => {
+  // Deletes always snapshot the before state, regardless of fullSnapshots
+  // option. The option is ignored for delete; restorability is mandatory.
+  const store: Record<string, Record<string, unknown>> = {
+    lead_doomed: { id: 'lead_doomed', stage: 'New' },
+  };
+  const logRows: MutationLogRecord[] = [];
+  const entity: DeletableEntity = {
+    async delete(id) { delete store[id]; },
+    async get(id) { return store[id]; },
+  };
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  await loggedDelete(entity, 'lead_doomed', {
+    source: 'user',
+    actor: 'u_1',
+    mutationLog,
+    fullSnapshots: false,  // explicitly off — must be ignored
+  });
+  assertEquals(logRows[0].before_snapshot?.stage, 'New');
+});
+
+Deno.test('loggedDelete: get failure means we cannot capture before_snapshot — log row uses empty object', async () => {
+  // If entity.get throws (e.g. already deleted, permission lost), we still
+  // proceed to delete + log, but before_snapshot is {} not undefined so the
+  // schema invariant holds.
+  const entity: DeletableEntity = {
+    async delete() {},
+    async get() { throw new Error('not found'); },
+  };
+  const logRows: MutationLogRecord[] = [];
+  const mutationLog: LogEntity = {
+    async create(record) { logRows.push(record); return record; },
+  };
+  await loggedDelete(entity, 'lead_doomed', {
+    source: 'user', actor: 'u_1', mutationLog,
+  });
+  assertEquals(logRows[0].before_snapshot, {});
+});
+
+Deno.test('loggedDelete: log-write failure warns, does not throw', async () => {
+  const entity: DeletableEntity = {
+    async delete() {},
+    async get() { return { id: 'x' }; },
+  };
+  const failingLog: LogEntity = {
+    async create() { throw new Error('log failed'); },
+  };
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args); };
+  try {
+    await loggedDelete(entity, 'lead_doomed', {
+      source: 'user', actor: 'u_1', mutationLog: failingLog,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEquals(warnings.length >= 1, true);
 });

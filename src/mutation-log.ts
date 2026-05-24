@@ -202,3 +202,47 @@ export async function loggedCreate<T extends CreatableEntity>(
 
   return created;
 }
+
+/**
+ * Wrap entity.delete with a MutationLog write. before_snapshot is ALWAYS
+ * captured (deletes are destructive — must be restorable). field_changes
+ * is an empty object. The `fullSnapshots` option is intentionally ignored
+ * here; the snapshot is mandatory regardless of source.
+ *
+ * If entity.get throws while capturing the before-state, we proceed with
+ * the delete and log row but set before_snapshot to `{}` (not undefined)
+ * so the schema invariant "delete rows have a before_snapshot field" holds.
+ */
+export async function loggedDelete<T extends DeletableEntity>(
+  entity: T,
+  id: string,
+  opts: LoggedOptions,
+): Promise<void> {
+  let before: Record<string, unknown> = {};
+  try {
+    before = await entity.get(id);
+  } catch (_err) {
+    // Capture failure — keep going with empty before_snapshot.
+  }
+
+  await entity.delete(id);
+
+  const entityType = opts.entityType ?? entity.constructor.name;
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: id,
+    mutation_type: 'delete',
+    source: opts.source,
+    actor_id: opts.actor,
+    field_changes: {},
+    before_snapshot: before,
+  };
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id} (delete): ${err}`,
+    );
+  }
+}
