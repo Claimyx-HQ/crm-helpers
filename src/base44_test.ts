@@ -1,0 +1,119 @@
+import { assertEquals, assert } from 'jsr:@std/assert@^1.0.0';
+import { withRetry, makeRetryState } from './base44.ts';
+
+// Helper: build an error shaped like a Base44 429 response.
+function rateLimitError(retryAfterSec?: number): Error & { status: number; headers?: Record<string, string> } {
+  const err = new Error('Rate limit exceeded') as Error & { status: number; headers?: Record<string, string> };
+  err.status = 429;
+  if (retryAfterSec !== undefined) {
+    err.headers = { 'retry-after': String(retryAfterSec) };
+  }
+  return err;
+}
+
+Deno.test('withRetry: succeeds on first try', async () => {
+  const state = makeRetryState(Date.now());
+  let calls = 0;
+  const result = await withRetry(state, async () => { calls += 1; return 'ok'; }, 'test');
+  assertEquals(result, 'ok');
+  assertEquals(calls, 1);
+});
+
+Deno.test('withRetry: backoff has jitter — parallel rate-limited retries do not align', async () => {
+  // 20 independent withRetry chains, each rate-limited once, MUST sleep
+  // different amounts. Without jitter, identical inputs produce identical
+  // sleeps and the retries align — thundering herd.
+  const samples: number[] = [];
+  for (let i = 0; i < 20; i += 1) {
+    const state = makeRetryState(Date.now(), 30_000);
+    let calls = 0;
+    const t0 = Date.now();
+    await withRetry(state, async () => {
+      calls += 1;
+      if (calls === 1) throw rateLimitError();
+      return 'ok';
+    }, 'test').catch(() => {});
+    samples.push(Date.now() - t0);
+  }
+  const min = Math.min(...samples);
+  const max = Math.max(...samples);
+  assert(max - min > 400, `expected jitter spread > 400ms, got ${max - min}ms (min=${min} max=${max})`);
+});
+
+Deno.test('withRetry: backoff grows super-linearly (exponential, not linear)', async () => {
+  // Force several rate-limit retries and confirm the cooldown grows
+  // super-linearly. Linear: 1500, 3000, 4500. Exponential cap: up to 12000.
+  //
+  // Because we use full jitter (random(0, cap)), any single sample can
+  // shrink across attempts. Average across N chains to compare means —
+  // E[uniform(0, cap)] = cap/2, so means follow the cap schedule.
+  const N = 8;
+  const firsts: number[] = [];
+  const lasts: number[] = [];
+  for (let i = 0; i < N; i += 1) {
+    const state = makeRetryState(Date.now(), 60_000);
+    const sleepDurations: number[] = [];
+    let lastTick = Date.now();
+    let calls = 0;
+    await withRetry(state, async () => {
+      const now = Date.now();
+      if (calls > 0) sleepDurations.push(now - lastTick);
+      lastTick = now;
+      calls += 1;
+      if (calls < 4) throw rateLimitError();
+      return 'ok';
+    }, 'test');
+    assert(sleepDurations.length >= 2, 'need at least 2 backoffs');
+    firsts.push(sleepDurations[0]);
+    lasts.push(sleepDurations[sleepDurations.length - 1]);
+  }
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const firstAvg = avg(firsts);
+  const lastAvg = avg(lasts);
+  assert(
+    lastAvg > firstAvg * 1.4,
+    `expected exponential growth in mean backoff, got firstAvg=${firstAvg}ms lastAvg=${lastAvg}ms`,
+  );
+});
+
+Deno.test('withRetry: honors Retry-After header in seconds', async () => {
+  const state = makeRetryState(Date.now(), 30_000);
+  let calls = 0;
+  const t0 = Date.now();
+  await withRetry(state, async () => {
+    calls += 1;
+    if (calls === 1) throw rateLimitError(2); // Retry-After: 2 seconds
+    return 'ok';
+  }, 'test');
+  const elapsed = Date.now() - t0;
+  assert(elapsed >= 1800, `expected to wait >= 1.8s for Retry-After: 2, got ${elapsed}ms`);
+  assert(elapsed < 4000, `Retry-After: 2 should cap wait around 2s, got ${elapsed}ms`);
+});
+
+Deno.test('withRetry: respects chunk deadline', async () => {
+  const state = makeRetryState(Date.now(), 100);
+  try {
+    await withRetry(state, async () => {
+      throw rateLimitError();
+    }, 'test');
+    throw new Error('should have thrown');
+  } catch (err) {
+    const msg = (err as Error).message;
+    assert(/deadline exceeded/i.test(msg), `expected deadline error, got: ${msg}`);
+  }
+});
+
+Deno.test('withRetry: non-rate-limit error bails after second attempt', async () => {
+  const state = makeRetryState(Date.now(), 30_000);
+  let calls = 0;
+  try {
+    await withRetry(state, async () => {
+      calls += 1;
+      throw new Error('boom');
+    }, 'test');
+    throw new Error('should have thrown');
+  } catch (err) {
+    assertEquals((err as Error).message, 'boom');
+    assert(calls <= 2, `expected <= 2 attempts for non-429, got ${calls}`);
+  }
+});

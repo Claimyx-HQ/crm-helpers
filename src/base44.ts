@@ -68,13 +68,19 @@ export function isDeadlineError(err: unknown): boolean {
 /**
  * Retry a Base44 SDK call with rate-limit-aware exponential backoff.
  *
+ * Uses **full jitter** (AWS-recommended) so parallel callers don't realign on
+ * retry: each sleep is `random(0, min(20s, 1500 * 2^attempt))`. Honors a
+ * `Retry-After` header (seconds) on the error if present, which Base44 may
+ * send to indicate when the next call may succeed — the jittered backoff is
+ * still applied on top as a floor.
+ *
  * - Only retries on 429-class errors. Other errors bail after the second
  *   attempt so we don't burn the chunk budget on a deterministic failure.
  * - Always respects the chunk deadline — if we're past it, throws so the
  *   outer loop can return a clean `in_progress` for the next chunk to retry.
  * - Honors and updates the shared `state.rateLimitUntil` cooldown, so
- *   parallel sibling calls don't keep hammering the API while one is backing
- *   off.
+ *   parallel sibling calls inside the same request don't keep hammering the
+ *   API while one is backing off.
  *
  * The `label` is included in the deadline-exceeded error message — pass
  * something descriptive ("Lead.filter(email)", "Apollo /accounts/search")
@@ -105,7 +111,19 @@ export async function withRetry<T>(
         status === 429 ||
         /rate.?limit|429/i.test((error as { message?: string })?.message || '');
       if (!isRateLimit && attempt >= 1) break;
-      const backoff = Math.min(20_000, 1500 * (attempt + 1));
+
+      // Full jitter exponential backoff: random(0, min(20s, 1500 * 2^attempt)).
+      // Capped at 20s so a stuck cooldown can't eat the whole chunk budget.
+      const cap = 20_000;
+      const exp = Math.min(cap, 1500 * Math.pow(2, attempt));
+      const jittered = Math.floor(Math.random() * exp);
+
+      // If the response carried a Retry-After header (seconds), use it as
+      // a floor on the wait — server is telling us when the next call may
+      // succeed. Jitter still applied on top via Math.max.
+      const retryAfterMs = parseRetryAfterMs(error);
+      const backoff = Math.max(jittered, retryAfterMs);
+
       if (isRateLimit) {
         state.rateLimitUntil = Math.max(
           state.rateLimitUntil,
@@ -120,6 +138,33 @@ export async function withRetry<T>(
     }
   }
   throw (lastError as Error) || new Error(`${label} failed`);
+}
+
+/**
+ * Parse a `Retry-After` header (seconds form only) from a thrown error.
+ * Returns 0 if absent or unparseable. HTTP-date form is intentionally
+ * unsupported — it's rare for 429 responses and adds complexity for
+ * marginal gain.
+ *
+ * Looks in two shapes: `error.headers` (plain object) and
+ * `error.response.headers` (fetch Response.headers, with a `.get()` method).
+ */
+function parseRetryAfterMs(error: unknown): number {
+  const e = error as {
+    headers?: Record<string, string>;
+    response?: { headers?: { get?: (k: string) => string | null } };
+  };
+  let raw: string | null | undefined;
+  if (e?.headers && typeof e.headers === 'object') {
+    raw = e.headers['retry-after'] ?? e.headers['Retry-After'];
+  }
+  if (!raw && e?.response?.headers && typeof e.response.headers.get === 'function') {
+    raw = e.response.headers.get('retry-after');
+  }
+  if (!raw) return 0;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  return Math.min(30_000, Math.floor(seconds * 1000)); // cap at 30s
 }
 
 // ---------------------------------------------------------------------------
