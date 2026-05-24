@@ -67,3 +67,90 @@ export const PHONE_TYPE_LABEL: Record<PhoneType, string> = {
   work: 'Work',
   other: 'Other',
 };
+
+// ---------------------------------------------------------------------------
+// Call outcomes — the disposition assigned to a call by the LLM verdict in
+// `processQuoActivity`, also stored on Lead.last_call_outcome and
+// CallActivity.ai_outcome.
+//
+// MUST stay in sync with the `enum` arrays in
+// `sales-crm/base44/entities/CallActivity.jsonc` and
+// `sales-crm/base44/entities/Lead.jsonc`. Drift between this const and the
+// entity JSONC enums is what flow-catalog issue #31 (sales-crm-plans) is
+// about — once sales-crm switches its inline OUTCOMES const to import from
+// here, the JSONC enums become the only other source of truth.
+// ---------------------------------------------------------------------------
+
+export const CALL_OUTCOMES = [
+  'demo_scheduled',
+  'not_reached',
+  'wrong_contact',
+  'not_interested_follow_up',
+  'not_interested',
+  'interested_needs_follow_up',
+  'gatekeeper',
+  'no_fit',
+  'unknown',
+] as const;
+
+export type CallOutcome = typeof CALL_OUTCOMES[number];
+
+/**
+ * Default outcome assigned when the LLM cannot confidently classify a call.
+ * Matches `CallActivity.ai_outcome.default` in the entity JSONC.
+ */
+export const DEFAULT_CALL_OUTCOME: CallOutcome = 'unknown';
+
+/**
+ * UI-friendly labels for each call outcome. Use these in the Queue Wrap
+ * dialog, the CallActivity table, and anywhere else an outcome is rendered
+ * to a rep.
+ */
+export const CALL_OUTCOME_LABEL: Record<CallOutcome, string> = {
+  demo_scheduled: 'Demo scheduled',
+  not_reached: 'Not reached',
+  wrong_contact: 'Wrong contact',
+  not_interested_follow_up: 'Not interested — follow up later',
+  not_interested: 'Not interested',
+  interested_needs_follow_up: 'Interested — needs follow up',
+  gatekeeper: 'Gatekeeper',
+  no_fit: 'No fit',
+  unknown: 'Unknown',
+};
+
+// ---------------------------------------------------------------------------
+// Next-action types — the forward-looking action the LLM (or a rep) decides
+// should happen next after a call. Stored on Lead.next_action_type and
+// CallActivity.ai_next_action_type. Drives the call queue and follow-ups.
+// ---------------------------------------------------------------------------
+
+export const NEXT_ACTION_TYPES = [
+  'callback',
+  'send_info',
+  'book_demo',
+  'nurture',
+  'dnc',
+  'no_action',
+] as const;
+
+export type NextActionType = typeof NEXT_ACTION_TYPES[number];
+
+/**
+ * Default next-action when no other action is implied. Matches
+ * `CallActivity.ai_next_action_type.default` in the entity JSONC.
+ */
+export const DEFAULT_NEXT_ACTION: NextActionType = 'no_action';
+
+/**
+ * UI-friendly labels for each next-action type. Use these in the Queue Wrap
+ * dialog (the "what should happen next" picker), the Follow-ups view, and
+ * anywhere else a next-action is rendered to a rep.
+ */
+export const NEXT_ACTION_LABEL: Record<NextActionType, string> = {
+  callback: 'Call back',
+  send_info: 'Send info',
+  book_demo: 'Book a demo',
+  nurture: 'Nurture',
+  dnc: 'Do not contact',
+  no_action: 'No action',
+};

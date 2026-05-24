@@ -153,8 +153,10 @@ OIDC tokenless publishing requires the linked-repo relationship. If you ever cre
 
 | Module | Import path | What's inside |
 |---|---|---|
+| `activity` | `jsr:@claimyx/crm-helpers/activity` | Write-source taxonomy and the `stampActivity` helper. Exports: `WRITE_SOURCES`, `WriteSource`, `isUserInitiated`, `stampActivity`. Only `source === 'user'` stamps `last_activity_at`; bulk admin and automation sources never stamp (PM decision D2, 2026-05-24). |
 | `apollo` | `jsr:@claimyx/crm-helpers/apollo` | Apollo HTTP client (`apolloPost`), normalizers (`normalizeAccount`, `normalizeContact`, `organizationAsAccount`), Apollo types (`ApolloAccount`, `ApolloOrganization`, `NormalizedCompany`, `ApolloContactInput`, `NormalizedLead`), constants (`APOLLO_BASE`, `MAX_LEADS_HARD_CAP`, `DEFAULT_MAX_LEADS`, `DEFAULT_DISCOVERY_TITLES`). |
 | `base44` | `jsr:@claimyx/crm-helpers/base44` | Chunked-function plumbing: `RetryState`, `DEFAULT_CHUNK_TIME_BUDGET_MS`, `makeRetryState`, `withRetry`, `isDeadlineError`. Orchestrator-auth pattern: `isAuthorizedOrchestratorCall`, `orchestratorPayload`, `chainingEnabled`. |
+| `phone` | `jsr:@claimyx/crm-helpers/phone` | Phone helpers consumed by sales-crm dedup paths. Re-exports the canonical `normalizePhone` from `./text` and adds `extractPrimaryPhone` (picks the most-trustworthy raw phone from an Apollo contact's `phone_numbers[0].raw_number → sanitized_number → sanitized_phone` chain). `PhoneSource` interface for the picker's input shape. |
 | `text` | `jsr:@claimyx/crm-helpers/text` | Generic utilities: `sleep`, `extractDomain`, `normalizeOrgName`, `buildLocation`, `normalizeEmailStatus`, `equalEnough`, `isUnchanged`. |
 
 For exact function signatures and what each does, see the doc comments in `src/*.ts` or the auto-generated docs on JSR.
