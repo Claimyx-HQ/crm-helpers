@@ -63,3 +63,13 @@ Deno.test('extractPrimaryPhone composed with normalizePhone', () => {
   const contact = { phone_numbers: [{ raw_number: '(555) 123-4567' }] };
   assertEquals(normalizePhone(extractPrimaryPhone(contact)), '+15551234567');
 });
+
+Deno.test('normalizePhone: bare "+" → empty string', () => {
+  assertEquals(normalizePhone('+'), '');
+});
+
+Deno.test('normalizePhone: malformed multi-"+" collapses to single leading "+"', () => {
+  // Regression guard: the previous in-file implementation produced
+  // '+1+555+1234567'. The text.ts re-export must strip stray +s.
+  assertEquals(normalizePhone('+1+555+1234567'), '+15551234567');
+});

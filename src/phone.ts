@@ -1,38 +1,15 @@
 // crm-helpers/src/phone.ts
-// Canonical phone normalizer and primary-phone picker. Consolidates three
-// drifting copies that previously lived in sales-crm base44 functions
-// (`syncQuoCalls`, `discoverLeadsForCompany`, `enrichLeadFromApollo`).
+// Single import surface for phone helpers consumed by sales-crm. Re-exports
+// the canonical `normalizePhone` from `./text.ts` (the existing E.164 join-key
+// normalizer) and adds `extractPrimaryPhone` — an Apollo-contact picker that
+// returns the most-trustworthy raw phone string before normalization.
 //
-// `normalizePhone` produces an E.164-shaped string ("+15551234567") suitable
-// for use as a dedup key. `extractPrimaryPhone` picks the most-trustworthy
-// raw phone string from an Apollo-shaped contact; pipe its output through
-// `normalizePhone` to get a dedup-ready value.
+// Intended call pattern in consumers:
+//
+//   import { normalizePhone, extractPrimaryPhone } from '@claimyx/crm-helpers/phone';
+//   const key = normalizePhone(extractPrimaryPhone(contact));
 
-/**
- * Normalize a phone string into an E.164-ish form ("+15551234567"). Returns
- * an empty string for null / undefined / whitespace / pure non-digit input.
- *
- * Rules:
- *  - Leading `+` is preserved; all other non-digit characters are stripped.
- *  - 10-digit input (no `+`) is treated as US and prefixed `+1`.
- *  - 11+-digit input without `+` is prefixed `+` as-is (best-effort guess
- *    at the country code already being present).
- *
- * The output is a STRICTLY normalized comparison key, not a display form.
- * Render the original `phone` field for users; use this only for dedup
- * lookups and phone-index queries.
- */
-export function normalizePhone(phone: string | null | undefined): string {
-  const raw = String(phone ?? '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('+')) {
-    const stripped = raw.replace(/[^+\d]/g, '');
-    return stripped === '+' ? '' : stripped;
-  }
-  const digits = raw.replace(/\D/g, '');
-  if (!digits) return '';
-  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
-}
+export { normalizePhone } from './text.ts';
 
 /**
  * Shape of an Apollo contact-like object as seen by `extractPrimaryPhone`.
