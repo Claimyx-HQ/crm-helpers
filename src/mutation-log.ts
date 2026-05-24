@@ -1,0 +1,283 @@
+// Mutation-log helpers — wrap Base44 entity writes with a MutationLog row.
+// See `MutationLogRecord` (Task 2) for the wire shape; consumers (sales-crm)
+// must define a `MutationLog.jsonc` entity that matches it field-for-field.
+
+/**
+ * A single field's change in a MutationLog row. `from` is the prior value
+ * (`null` if the field was unset). `to` is the new value (`null` if the
+ * caller explicitly unset it). Returned in a `Record<string, FieldChange>`
+ * by `computeDiff` and stored under `MutationLogRecord.field_changes`.
+ *
+ * Both values are JSON-safe — `undefined` is normalized to `null` upstream
+ * in `computeDiff` so the record round-trips through Base44's JSON storage
+ * intact.
+ */
+export interface FieldChange {
+  from: unknown;
+  to: unknown;
+}
+
+/**
+ * Compute a field-by-field diff between two plain-JSON records. Only fields
+ * present in `after` are inspected. A field whose JSON.stringify is equal
+ * before and after is skipped — the returned object contains only changed
+ * fields, with `{ from, to }` pairs.
+ *
+ * Used by `loggedUpdate` to compute the `field_changes` map written to
+ * MutationLog. Not exposed for general-purpose diffing — the JSON.stringify
+ * equality is intentionally narrow to Base44's "all values are plain JSON"
+ * domain. A Date object or class instance in an entity field could
+ * false-positive; in practice Base44 entities are plain JSON.
+ * Object key order also matters for the equality check (`{a,b}` ≠ `{b,a}`).
+ * Base44 round-trips JSON with stable key order so this is low risk in
+ * practice, but a manually-constructed `before` object could mismatch a
+ * Base44-read `after` if the keys differ.
+ *
+ * `undefined` values are normalized to `null` in both inputs and outputs so
+ * the diff is JSON-safe (the wire shape is persisted to a Base44 entity).
+ * Side effect: "field was unset" and "field was set to null" become
+ * indistinguishable in field_changes — acceptable because Base44 stores
+ * both as null anyway.
+ */
+export function computeDiff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, FieldChange> {
+  const diff: Record<string, FieldChange> = {};
+  for (const key of Object.keys(after)) {
+    // Normalize undefined → null so the diff round-trips through JSON. The
+    // wire shape (MutationLogRecord) is serialized to a Base44 entity;
+    // undefined values would be dropped on serialize, silently corrupting
+    // field_changes. After normalization, "field unset before" and "field
+    // set to null before" are indistinguishable — acceptable because Base44
+    // already stores both as null.
+    const beforeVal = before[key] === undefined ? null : before[key];
+    const afterVal = after[key] === undefined ? null : after[key];
+    if (JSON.stringify(beforeVal) !== JSON.stringify(afterVal)) {
+      diff[key] = { from: beforeVal, to: afterVal };
+    }
+  }
+  return diff;
+}
+
+import { stampActivity, type WriteSource } from './activity.ts';
+
+/**
+ * Wire shape written to the sales-crm MutationLog entity. The sales-crm
+ * `MutationLog.jsonc` MUST mirror these field names and types — every name
+ * here is part of the cross-repo contract.
+ */
+export interface MutationLogRecord {
+  entity_type: string;
+  entity_id: string;
+  mutation_type: 'create' | 'update' | 'delete';
+  source: WriteSource;
+  actor_id: string;
+  field_changes: Record<string, FieldChange>;
+  before_snapshot?: Record<string, unknown>;
+  after_snapshot?: Record<string, unknown>;
+}
+
+/** Minimal Base44 entity client surface for update operations. */
+export interface UpdatableEntity {
+  update(id: string, data: Record<string, unknown>): Promise<Record<string, unknown>>;
+  get(id: string): Promise<Record<string, unknown>>;
+}
+
+/** Minimal client surface for create operations. */
+export interface CreatableEntity {
+  create(data: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+/** Minimal client surface for delete operations. */
+export interface DeletableEntity {
+  delete(id: string): Promise<void>;
+  get(id: string): Promise<Record<string, unknown>>;
+}
+
+/** The MutationLog entity client passed in via LoggedOptions.mutationLog. */
+export interface LogEntity {
+  create(record: MutationLogRecord): Promise<unknown>;
+}
+
+/**
+ * Options passed to every logged* helper. `mutationLog` is the entity client
+ * for writing the log row (injected so this module doesn't need to know
+ * about a specific Base44 namespace). `fullSnapshots` controls whether
+ * before_snapshot / after_snapshot are attached — defaults to true for
+ * `llm`, `bulk_admin`, and `apollo_sync` sources (where override visibility
+ * matters), false otherwise.
+ */
+export interface LoggedOptions {
+  source: WriteSource;
+  actor: string;
+  mutationLog: LogEntity;
+  fullSnapshots?: boolean;
+  entityType?: string;
+}
+
+/**
+ * Decide whether to attach full snapshots to a MutationLog row based on
+ * source. Exposed for callers who want to query the default without setting
+ * `fullSnapshots` explicitly.
+ */
+export function defaultFullSnapshots(source: WriteSource): boolean {
+  return source === 'llm' || source === 'bulk_admin' || source === 'apollo_sync';
+}
+
+/**
+ * Wrap entity.update with a MutationLog write. Calls stampActivity to
+ * enforce D2 (only `source === 'user'` stamps last_activity_at; non-user
+ * sources have any accidental last_activity_at stripped from the payload).
+ *
+ * Returns the updated entity. Log-write failures are warned to console.warn
+ * but do NOT throw — the entity write has already landed and we don't roll
+ * back. Integrators that need stricter behavior can layer a retry on top.
+ *
+ * `field_changes` is diffed against the caller's `updates` object, not
+ * against the stamped payload sent to storage — so auto-injected fields
+ * like `last_activity_at` do not appear in `field_changes` even though
+ * they are written to the entity. This is intentional: the audit log
+ * should reflect caller intent, not internal bookkeeping. An explicit
+ * `last_activity_at` value passed by the caller WILL appear (it's part
+ * of intent).
+ */
+export async function loggedUpdate<T extends UpdatableEntity>(
+  entity: T,
+  id: string,
+  updates: Record<string, unknown>,
+  opts: LoggedOptions,
+): Promise<Record<string, unknown>> {
+  const nowIso = new Date().toISOString();
+  const stamped = stampActivity(updates, nowIso, opts.source);
+
+  // Snapshot the before state if needed; also needed for field_changes diff.
+  const before = await entity.get(id);
+  const updated = await entity.update(id, stamped);
+
+  const fullSnapshots = opts.fullSnapshots ?? defaultFullSnapshots(opts.source);
+  const entityType = opts.entityType ?? entity.constructor.name;
+
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: id,
+    mutation_type: 'update',
+    source: opts.source,
+    actor_id: opts.actor,
+    // Diff against `updates` (not `stamped`) so that stampActivity's
+    // automatically-injected last_activity_at is NOT reported as a
+    // field change — field_changes reflects what the caller intended to change.
+    field_changes: computeDiff(before, updates),
+  };
+  if (fullSnapshots) {
+    record.before_snapshot = before;
+    record.after_snapshot = updated;
+  }
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id}:`,
+      err,
+    );
+  }
+
+  return updated;
+}
+
+/**
+ * Wrap entity.create with a MutationLog write. `field_changes` is always
+ * an empty object (no before state). `after_snapshot` is ALWAYS attached
+ * regardless of source — creates are rare enough that the snapshot cost is
+ * amortized, and replay-after-delete benefits from the full row.
+ *
+ * Returns the created entity. Log-write failures are warned to console.warn
+ * but do NOT throw.
+ */
+export async function loggedCreate<T extends CreatableEntity>(
+  entity: T,
+  data: Record<string, unknown>,
+  opts: LoggedOptions,
+): Promise<Record<string, unknown>> {
+  const created = await entity.create(data);
+  const entityType = opts.entityType ?? entity.constructor.name;
+  const idValue = created.id;
+  const entityId = typeof idValue === 'string' ? idValue : '';
+  if (entityId === '') {
+    console.warn(
+      `[mutation-log] loggedCreate: ${entityType}.create returned no id field — entity_id logged as empty string`,
+    );
+  }
+
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: entityId,
+    mutation_type: 'create',
+    source: opts.source,
+    actor_id: opts.actor,
+    field_changes: {},
+    after_snapshot: created,
+  };
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${entityId} (create):`,
+      err,
+    );
+  }
+
+  return created;
+}
+
+/**
+ * Wrap entity.delete with a MutationLog write. before_snapshot is ALWAYS
+ * captured (deletes are destructive — must be restorable). field_changes
+ * is an empty object. The `fullSnapshots` option is intentionally ignored
+ * here; the snapshot is mandatory regardless of source.
+ *
+ * If entity.get throws while capturing the before-state, we proceed with
+ * the delete and log row but set before_snapshot to `{}` (not undefined)
+ * so the schema invariant "delete rows have a before_snapshot field" holds.
+ */
+export async function loggedDelete<T extends DeletableEntity>(
+  entity: T,
+  id: string,
+  opts: LoggedOptions,
+): Promise<void> {
+  let before: Record<string, unknown> = {};
+  try {
+    const captured = await entity.get(id);
+    if (captured != null && typeof captured === 'object') {
+      before = captured as Record<string, unknown>;
+    }
+    // If captured is null/undefined/non-object: leave before as {} (the
+    // documented fallback). Mirrors the "entity.get throws" fallback path.
+  } catch (_err) {
+    // Capture failure — keep going with empty before_snapshot.
+  }
+
+  await entity.delete(id);
+
+  const entityType = opts.entityType ?? entity.constructor.name;
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: id,
+    mutation_type: 'delete',
+    source: opts.source,
+    actor_id: opts.actor,
+    field_changes: {},
+    before_snapshot: before,
+  };
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id} (delete):`,
+      err,
+    );
+  }
+}
