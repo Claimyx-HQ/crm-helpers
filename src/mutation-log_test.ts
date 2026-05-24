@@ -3,7 +3,10 @@ import {
   computeDiff,
   defaultFullSnapshots,
   type FieldChange,
+  loggedUpdate,
+  type LogEntity,
   type MutationLogRecord,
+  type UpdatableEntity,
 } from './mutation-log.ts';
 
 Deno.test('computeDiff: empty diff when nothing changed', () => {
@@ -99,4 +102,168 @@ Deno.test('defaultFullSnapshots: user / cron / quo_sync / import → false', () 
   assertEquals(defaultFullSnapshots('cron'), false);
   assertEquals(defaultFullSnapshots('quo_sync'), false);
   assertEquals(defaultFullSnapshots('import'), false);
+});
+
+// Fake entity + log clients for behavioral tests. Reset per-test.
+function makeFakes() {
+  const entityStore: Record<string, Record<string, unknown>> = {
+    lead_1: { id: 'lead_1', stage: 'New', owner: 'u1', last_activity_at: null },
+  };
+  const logRows: MutationLogRecord[] = [];
+  const entity: UpdatableEntity = {
+    async update(id, data) {
+      entityStore[id] = { ...entityStore[id], ...data };
+      return entityStore[id];
+    },
+    async get(id) {
+      return entityStore[id];
+    },
+  };
+  const mutationLog: LogEntity = {
+    async create(record) {
+      logRows.push(record);
+      return record;
+    },
+  };
+  return { entity, mutationLog, logRows, entityStore };
+}
+
+Deno.test('loggedUpdate: writes the updated entity AND a MutationLog row', async () => {
+  const { entity, mutationLog, logRows, entityStore } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+  });
+  assertEquals(entityStore.lead_1.stage, 'Qualified');
+  assertEquals(logRows.length, 1);
+  assertEquals(logRows[0].entity_id, 'lead_1');
+  assertEquals(logRows[0].mutation_type, 'update');
+  assertEquals(logRows[0].source, 'user');
+  assertEquals(logRows[0].actor_id, 'u_42');
+  assertEquals(logRows[0].field_changes.stage, { from: 'New', to: 'Qualified' });
+});
+
+Deno.test('loggedUpdate: stampActivity is applied on user source', async () => {
+  const { entity, mutationLog, entityStore } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+  });
+  // The user source must have stamped last_activity_at on the live entity.
+  const stamped = entityStore.lead_1.last_activity_at;
+  assertEquals(typeof stamped === 'string' && stamped.length > 0, true);
+});
+
+Deno.test('loggedUpdate: bulk_admin does NOT stamp last_activity_at (D2)', async () => {
+  const { entity, mutationLog, entityStore } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Closed Lost' }, {
+    source: 'bulk_admin',
+    actor: 'u_42',
+    mutationLog,
+  });
+  // Same starting state (null); bulk_admin must not stamp.
+  assertEquals(entityStore.lead_1.last_activity_at, null);
+});
+
+Deno.test('loggedUpdate: defaults entity_type from constructor name when omitted', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  // Wrap the entity so its constructor name is "Lead".
+  class Lead implements UpdatableEntity {
+    async update(id: string, data: Record<string, unknown>) { return entity.update(id, data); }
+    async get(id: string) { return entity.get(id); }
+  }
+  const leadClient = new Lead();
+  await loggedUpdate(leadClient, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+  });
+  assertEquals(logRows[0].entity_type, 'Lead');
+});
+
+Deno.test('loggedUpdate: entityType option overrides constructor name', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+    entityType: 'CustomEntity',
+  });
+  assertEquals(logRows[0].entity_type, 'CustomEntity');
+});
+
+Deno.test('loggedUpdate: fullSnapshots=true on user source attaches before/after', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+    fullSnapshots: true,
+  });
+  assertEquals(typeof logRows[0].before_snapshot, 'object');
+  assertEquals(typeof logRows[0].after_snapshot, 'object');
+  assertEquals(logRows[0].before_snapshot?.stage, 'New');
+  assertEquals(logRows[0].after_snapshot?.stage, 'Qualified');
+});
+
+Deno.test('loggedUpdate: default behavior: user source → no snapshots', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+  });
+  // Default for 'user' is no snapshots (diff is enough).
+  assertEquals(logRows[0].before_snapshot, undefined);
+  assertEquals(logRows[0].after_snapshot, undefined);
+});
+
+Deno.test('loggedUpdate: default behavior: llm source → snapshots attached', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+    source: 'llm',
+    actor: 'processQuoActivity',
+    mutationLog,
+  });
+  // Default for 'llm' is snapshots on.
+  assertEquals(typeof logRows[0].before_snapshot, 'object');
+  assertEquals(typeof logRows[0].after_snapshot, 'object');
+});
+
+Deno.test('loggedUpdate: log-write failure does not throw (warns instead)', async () => {
+  const { entity, entityStore } = makeFakes();
+  const failingLog: LogEntity = {
+    async create() { throw new Error('log write failed'); },
+  };
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args); };
+  try {
+    await loggedUpdate(entity, 'lead_1', { stage: 'Qualified' }, {
+      source: 'user',
+      actor: 'u_42',
+      mutationLog: failingLog,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  // Entity update still landed.
+  assertEquals(entityStore.lead_1.stage, 'Qualified');
+  // The warn was emitted.
+  assertEquals(warnings.length >= 1, true);
+});
+
+Deno.test('loggedUpdate: no-op update (no field changes) still writes a log row', async () => {
+  const { entity, mutationLog, logRows } = makeFakes();
+  await loggedUpdate(entity, 'lead_1', { stage: 'New' }, {
+    source: 'user',
+    actor: 'u_42',
+    mutationLog,
+  });
+  // The intent was recorded even though nothing changed — useful for "did the
+  // human click save with no edits?" telemetry.
+  assertEquals(logRows.length, 1);
+  assertEquals(logRows[0].field_changes, {});
 });

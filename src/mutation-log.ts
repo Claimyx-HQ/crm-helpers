@@ -108,3 +108,57 @@ export interface LoggedOptions {
 export function defaultFullSnapshots(source: WriteSource): boolean {
   return source === 'llm' || source === 'bulk_admin' || source === 'apollo_sync';
 }
+
+import { stampActivity } from './activity.ts';
+
+/**
+ * Wrap entity.update with a MutationLog write. Calls stampActivity to
+ * enforce D2 (only `source === 'user'` stamps last_activity_at; non-user
+ * sources have any accidental last_activity_at stripped from the payload).
+ *
+ * Returns the updated entity. Log-write failures are warned to console.warn
+ * but do NOT throw — the entity write has already landed and we don't roll
+ * back. Integrators that need stricter behavior can layer a retry on top.
+ */
+export async function loggedUpdate<T extends UpdatableEntity>(
+  entity: T,
+  id: string,
+  updates: Record<string, unknown>,
+  opts: LoggedOptions,
+): Promise<Record<string, unknown>> {
+  const nowIso = new Date().toISOString();
+  const stamped = stampActivity(updates, nowIso, opts.source);
+
+  // Snapshot the before state if needed; also needed for field_changes diff.
+  const before = await entity.get(id);
+  const updated = await entity.update(id, stamped);
+
+  const fullSnapshots = opts.fullSnapshots ?? defaultFullSnapshots(opts.source);
+  const entityType = opts.entityType ?? entity.constructor.name;
+
+  const record: MutationLogRecord = {
+    entity_type: entityType,
+    entity_id: id,
+    mutation_type: 'update',
+    source: opts.source,
+    actor_id: opts.actor,
+    // Diff against `updates` (not `stamped`) so that stampActivity's
+    // automatically-injected last_activity_at is NOT reported as a
+    // field change — field_changes reflects what the caller intended to change.
+    field_changes: computeDiff(before, updates),
+  };
+  if (fullSnapshots) {
+    record.before_snapshot = before;
+    record.after_snapshot = updated;
+  }
+
+  try {
+    await opts.mutationLog.create(record);
+  } catch (err) {
+    console.warn(
+      `[mutation-log] failed to write MutationLog row for ${entityType}:${id}: ${err}`,
+    );
+  }
+
+  return updated;
+}
