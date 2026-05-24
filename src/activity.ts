@@ -42,6 +42,11 @@ export function isUserInitiated(source: WriteSource): boolean {
  * `last_activity_at` in `updates` is stripped so accidental inclusion can't
  * silently break the AI-override guard.
  *
+ * Preserve an explicit last_activity_at if the caller already supplied a
+ * non-empty string value (e.g. backfill from a known event time).
+ * `null`, `undefined`, and empty strings are treated as 'not set' and
+ * `timestampIso` is stamped in their place.
+ *
  * Intended call pattern:
  *
  *   await Lead.update(id, stampActivity({ stage: 'Demo Booked' }, new Date().toISOString(), 'user'));
@@ -54,9 +59,12 @@ export function stampActivity<T extends Record<string, unknown>>(
   source: WriteSource,
 ): T & { last_activity_at?: string } {
   if (isUserInitiated(source)) {
-    // Preserve an explicit last_activity_at if the caller already supplied
-    // one (e.g. backfill from a known event time); otherwise stamp `ts`.
-    if ('last_activity_at' in updates && updates.last_activity_at != null) {
+    // Preserve an explicit last_activity_at if the caller already supplied a
+    // non-empty string value (e.g. backfill from a known event time).
+    // `null`, `undefined`, and empty strings are treated as 'not set' and
+    // `timestampIso` is stamped in their place.
+    const explicit = (updates as Record<string, unknown>).last_activity_at;
+    if (typeof explicit === 'string' && explicit.length > 0) {
       return { ...updates };
     }
     return { ...updates, last_activity_at: timestampIso };

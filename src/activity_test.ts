@@ -60,11 +60,35 @@ Deno.test('stampActivity: does not mutate the input object', () => {
 });
 
 Deno.test('stampActivity: explicit last_activity_at in updates is preserved when user', () => {
-  // If caller already stamped explicitly, don't second-guess them.
+  // If caller already stamped explicitly with a non-empty value, don't
+  // second-guess them. The full shape is checked to catch a regression
+  // where the spread accidentally drops sibling keys.
   const explicit = '2025-01-01T00:00:00Z';
   const ts = '2026-05-24T10:00:00Z';
-  const out = stampActivity({ last_activity_at: explicit }, ts, 'user');
-  assertEquals(out.last_activity_at, explicit);
+  const out = stampActivity(
+    { stage: 'Demo Booked', last_activity_at: explicit },
+    ts,
+    'user',
+  );
+  assertEquals(out, { stage: 'Demo Booked', last_activity_at: explicit });
+});
+
+Deno.test('stampActivity: null last_activity_at on user source → stamped (null treated as absent)', () => {
+  const ts = '2026-05-24T10:00:00Z';
+  const out = stampActivity({ last_activity_at: null }, ts, 'user');
+  assertEquals(out, { last_activity_at: ts });
+});
+
+Deno.test('stampActivity: undefined last_activity_at on user source → stamped', () => {
+  const ts = '2026-05-24T10:00:00Z';
+  const out = stampActivity({ last_activity_at: undefined } as Record<string, unknown>, ts, 'user');
+  assertEquals(out, { last_activity_at: ts });
+});
+
+Deno.test('stampActivity: empty-string last_activity_at on user source → stamped (empty treated as absent)', () => {
+  const ts = '2026-05-24T10:00:00Z';
+  const out = stampActivity({ last_activity_at: '' }, ts, 'user');
+  assertEquals(out, { last_activity_at: ts });
 });
 
 Deno.test('stampActivity: explicit last_activity_at is stripped when source != user', () => {
