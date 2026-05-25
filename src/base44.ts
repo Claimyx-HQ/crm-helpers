@@ -77,6 +77,14 @@ const EXP_BACKOFF_CAP_MS = 20_000;
 // indefinitely.
 const RETRY_AFTER_CAP_MS = 30_000;
 
+// Lower bound on per-attempt jitter so `Math.random()` near 0 doesn't
+// produce a 0ms wait. A 0ms backoff would defeat the shared
+// `state.rateLimitUntil` cooldown — sibling calls inside the same request
+// would keep hammering the API even when one just hit a 429. 50ms is short
+// enough to feel snappy on the rare case where retries succeed quickly,
+// long enough to give the throttler a tick to settle between callers.
+const MIN_BACKOFF_MS = 50;
+
 /**
  * Retry a Base44 SDK call with rate-limit-aware exponential backoff.
  *
@@ -125,10 +133,14 @@ export async function withRetry<T>(
         /rate.?limit|429/i.test((error as { message?: string })?.message || '');
       if (!isRateLimit && attempt >= 1) break;
 
-      // Full jitter exponential backoff: random(0, min(EXP_BACKOFF_CAP_MS, 1500 * 2^attempt)).
-      // Capped at EXP_BACKOFF_CAP_MS so a stuck cooldown can't eat the whole chunk budget.
+      // Full jitter exponential backoff: random(MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
+      // 1500 * 2^attempt)). Capped at EXP_BACKOFF_CAP_MS so a stuck cooldown can't
+      // eat the whole chunk budget. Floored at MIN_BACKOFF_MS so a `Math.random()`
+      // result near 0 doesn't produce a 0ms wait that defeats the shared
+      // `state.rateLimitUntil` cooldown (a 0ms entry means sibling calls inside
+      // the same request would still hammer the API even when one just hit a 429).
       const exp = Math.min(EXP_BACKOFF_CAP_MS, 1500 * Math.pow(2, attempt));
-      const jittered = Math.floor(Math.random() * exp);
+      const jittered = MIN_BACKOFF_MS + Math.floor(Math.random() * Math.max(0, exp - MIN_BACKOFF_MS));
 
       // If the response carried a Retry-After header (seconds), use it as a
       // floor on the wait — server is telling us when the next call may
