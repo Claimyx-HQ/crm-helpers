@@ -15,6 +15,7 @@
     "./mutation-log": "./src/mutation-log.ts",
     "./phone": "./src/phone.ts",
     "./quo": "./src/quo.ts",
+    "./settings": "./src/settings.ts",
     "./task-run": "./src/task-run.ts",
     "./text": "./src/text.ts",
     "./triggers": "./src/triggers.ts",
