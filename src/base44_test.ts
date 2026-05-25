@@ -32,7 +32,7 @@ Deno.test('withRetry: backoff has jitter — parallel rate-limited retries do no
       calls += 1;
       if (calls === 1) throw rateLimitError();
       return 'ok';
-    }, 'test').catch(() => {});
+    }, 'test');
     samples.push(Date.now() - t0);
   }
   const min = Math.min(...samples);

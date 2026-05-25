@@ -129,8 +129,13 @@ export async function withRetry<T>(
       // own hint, capped at 1s extra so we don't blow the budget on a small
       // Retry-After.
       const retryAfterMs = parseRetryAfterMs(error);
+      // Add a small jitter spread (proportional to the floor, capped at 1s)
+      // so parallel callers receiving the same Retry-After value don't realign.
+      // Then re-cap to RETRY_AFTER_CAP_MS so the final wait still respects the
+      // documented bound from parseRetryAfterMs (otherwise a 30s Retry-After
+      // could become 31s after jitter).
       const retryAfterJitter = retryAfterMs > 0
-        ? retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000))
+        ? Math.min(30_000, retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000)))
         : 0;
       const backoff = Math.max(jittered, retryAfterJitter);
 
