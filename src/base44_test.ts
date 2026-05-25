@@ -50,10 +50,11 @@ Deno.test('withRetry: backoff grows super-linearly (exponential, not linear)', a
   // Because we use full jitter (random(MIN_BACKOFF_MS, cap)), any single
   // sample can shrink across attempts. Average across N chains to compare means —
   // E[uniform(MIN_BACKOFF_MS, cap)] = (MIN_BACKOFF_MS + cap)/2 ≈ cap/2 for
-  // cap >> MIN_BACKOFF_MS. The means at later attempts (cap doubles) will
-  // still grow super-linearly even with the floor — the floor only shifts
-  // the lower bound, not the cap. Asserting lastAvg > firstAvg * 1.4
-  // holds with comfortable margin.
+  // cap >> MIN_BACKOFF_MS. With `calls < 4` we force 3 retries (attempts 0,
+  // 1, 2 with caps 1500/3000/6000ms), so the means at attempt 2 should be
+  // ~2x the means at attempt 0. The floor only shifts the lower bound,
+  // not the cap, so super-linear growth still holds. Asserting
+  // lastAvg > firstAvg * 1.4 has comfortable margin even with N=8 samples.
   const N = 8;
   const firsts: number[] = [];
   const lasts: number[] = [];
@@ -93,8 +94,12 @@ Deno.test('withRetry: honors Retry-After header in seconds', async () => {
     return 'ok';
   }, 'test');
   const elapsed = Date.now() - t0;
-  assert(elapsed >= 1800, `expected to wait >= 1.8s for Retry-After: 2, got ${elapsed}ms`);
-  assert(elapsed < 4000, `Retry-After: 2 should cap wait around 2s, got ${elapsed}ms`);
+  // Retry-After: 2 makes the floor 2000ms. The jitter spread on top is
+  // bounded by min(retryAfterMs, 1000, headroom) so the wait is
+  // 2000..3000ms (cap headroom = 30000-2000 = 28000, well above 1000).
+  // Use a small tolerance below 2000 only to absorb scheduling latency.
+  assert(elapsed >= 1950, `expected to wait >= 2s for Retry-After: 2, got ${elapsed}ms`);
+  assert(elapsed < 3300, `Retry-After: 2 with 1s jitter spread should cap at ~3s, got ${elapsed}ms`);
 });
 
 Deno.test('withRetry: respects chunk deadline', async () => {
