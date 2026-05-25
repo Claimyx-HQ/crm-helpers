@@ -138,9 +138,9 @@ Deno.test('withRetry: rejects non-integer Retry-After (uses backoff instead)', a
   const elapsed = Date.now() - t0;
   // If we'd honored "1.5" as 1500ms, we'd wait ~1500-2500ms minimum.
   // Ignoring it falls back to exp-jitter with cap 1500 → 0..1500ms.
-  // The test asserts we didn't wait MORE than the exp-jitter cap.
-  // This is necessarily probabilistic — assert it can be FAST (the
-  // Retry-After path would force ≥1500ms; the rejection path allows
-  // less). Run twice to lower flake risk.
+  // The test asserts the rejection-path wait is bounded by the exp-jitter
+  // cap (~1500ms ceiling) rather than the Retry-After floor (≥1500ms).
+  // The 1800ms upper bound gives ~20% headroom over the deterministic max,
+  // keeping flake risk minimal.
   assert(elapsed < 1800, `expected fast retry after rejecting non-RFC Retry-After, got ${elapsed}ms`);
 });

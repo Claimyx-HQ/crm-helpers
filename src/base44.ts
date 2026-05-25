@@ -189,8 +189,10 @@ function parseRetryAfterMs(error: unknown): number {
   if (typeof raw !== 'string') return 0;
   // RFC 7231: Retry-After is either a non-negative integer (seconds) or
   // an HTTP-date. We only support the integer form — HTTP-date is rare
-  // for 429 responses and adds complexity for marginal gain. Reject
-  // forms like "1e3", "0.5", "+5", " 5 " by requiring strict integer.
+  // for 429 responses and adds complexity for marginal gain. Reject forms
+  // like "1e3", "0.5", "+5" by requiring strict integer digits. Surrounding
+  // whitespace is trimmed (HTTP headers commonly carry it) before validation;
+  // the digits-only check still applies after trimming.
   if (!/^\d+$/.test(raw.trim())) return 0;
   const seconds = Number(raw.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
