@@ -11,6 +11,7 @@
     "./base44": "./src/base44.ts",
     "./enums": "./src/enums.ts",
     "./format": "./src/format.ts",
+    "./import-batch": "./src/import-batch.ts",
     "./mutation-log": "./src/mutation-log.ts",
     "./phone": "./src/phone.ts",
     "./quo": "./src/quo.ts",
