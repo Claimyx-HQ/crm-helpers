@@ -15,7 +15,8 @@
     "./phone": "./src/phone.ts",
     "./quo": "./src/quo.ts",
     "./text": "./src/text.ts",
-    "./triggers": "./src/triggers.ts"
+    "./triggers": "./src/triggers.ts",
+    "./upsert": "./src/upsert.ts"
   },
   "publish": {
     "include": [
