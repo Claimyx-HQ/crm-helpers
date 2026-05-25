@@ -215,6 +215,7 @@ If Base44 ever ships first-class support for sidecar config files (`.npmrc` or e
 
 ```bash
 deno task check         # typecheck everything
+deno task test          # run all Deno test files in src/
 deno task publish:dry   # validate JSR publish without actually publishing
 ```
 
