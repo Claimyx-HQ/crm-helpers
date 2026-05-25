@@ -91,8 +91,9 @@ const MIN_BACKOFF_MS = 50;
  * Uses **full jitter** with a small floor (`MIN_BACKOFF_MS`) so parallel
  * callers don't realign on retry AND a `Math.random()` result near 0
  * doesn't produce a 0ms wait that would defeat the shared per-request
- * cooldown. Per-attempt sleep is `random(MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
- * 1500 * 2^attempt))`. When the server sends a
+ * cooldown. Per-attempt sleep is uniform in `[MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
+ * 1500 * 2^attempt))` (half-open — the cap itself is never returned, matching
+ * `Math.random()` semantics). When the server sends a
  * `Retry-After` header (seconds form), the wait is at least that value plus a
  * small randomized spread (≤1s) so parallel callers receiving the same
  * `Retry-After` still de-correlate — capped at 30s. So the EFFECTIVE max wait
@@ -187,6 +188,13 @@ export async function withRetry<T>(
  *
  * Looks in two shapes: `error.headers` (plain object) and
  * `error.response.headers` (fetch Response.headers, with a `.get()` method).
+ *
+ * Note: `src/quo.ts` has a related `parseRetryAfter` for fetch-Response
+ * headers (returns `number | null`, supports HTTP-date form). We keep this
+ * one separate because its input shape (SDK error objects) and output
+ * contract (number, 0 = "no header" rather than null) differ. Unifying
+ * both behind a shared helper is a worthwhile future refactor but out
+ * of scope for this PR.
  */
 function parseRetryAfterMs(error: unknown): number {
   const e = error as {
@@ -195,7 +203,15 @@ function parseRetryAfterMs(error: unknown): number {
   };
   let raw: string | null | undefined;
   if (e?.headers && typeof e.headers === 'object') {
-    raw = e.headers['retry-after'] ?? e.headers['Retry-After'];
+    // HTTP header names are case-insensitive (RFC 9110 §5.1). Some clients
+    // surface non-canonical casing (e.g. 'Retry-after', 'RETRY-AFTER').
+    // Walk the keys to find any case variant rather than guessing two.
+    for (const k of Object.keys(e.headers)) {
+      if (k.toLowerCase() === 'retry-after') {
+        raw = e.headers[k];
+        break;
+      }
+    }
   }
   if (!raw && e?.response?.headers && typeof e.response.headers.get === 'function') {
     raw = e.response.headers.get('retry-after');
