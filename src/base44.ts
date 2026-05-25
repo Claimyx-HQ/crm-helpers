@@ -192,9 +192,24 @@ export async function withRetry<T>(
 
 /**
  * Parse a `Retry-After` header (seconds form only) from a thrown error.
- * Returns 0 if absent or unparseable. HTTP-date form is intentionally
- * unsupported — it's rare for 429 responses and adds complexity for
- * marginal gain.
+ * HTTP-date form is intentionally unsupported — it's rare for 429
+ * responses and adds complexity for marginal gain.
+ *
+ * Returns the wait floor in milliseconds, capped at `RETRY_AFTER_CAP_MS`.
+ * Returns `0` when:
+ *   - the header is absent or in a shape we can't read,
+ *   - the value isn't a strict non-negative integer (e.g. `"1e3"`, `"0.5"`),
+ *   - the value parses to a negative number, OR
+ *   - the value is an explicit `Retry-After: 0` (RFC 7231 §7.1.3 "retry
+ *     immediately").
+ *
+ * The caller (`withRetry`) cannot distinguish these cases by return value
+ * alone, and intentionally treats them identically: it then layers full
+ * exponential jitter with the `MIN_BACKOFF_MS` floor on top, so an
+ * explicit 0 still produces a small (≥ MIN_BACKOFF_MS) wait instead of
+ * hammering the API immediately. If a caller ever needs to distinguish
+ * "no header" from "header said 0", switch to returning `number | null`
+ * here AND update `withRetry`'s downstream logic.
  *
  * Looks in two shapes: `error.headers` (plain object) and
  * `error.response.headers` (fetch Response.headers, with a `.get()` method).
@@ -202,9 +217,8 @@ export async function withRetry<T>(
  * Note: `src/quo.ts` has a related `parseRetryAfter` for fetch-Response
  * headers (returns `number | null`, supports HTTP-date form). We keep this
  * one separate because its input shape (SDK error objects) and output
- * contract (number, 0 = "no header" rather than null) differ. Unifying
- * both behind a shared helper is a worthwhile future refactor but out
- * of scope for this PR.
+ * contract differ. Unifying both behind a shared helper is a worthwhile
+ * future refactor but out of scope for this PR.
  */
 function parseRetryAfterMs(error: unknown): number {
   const e = error as {
