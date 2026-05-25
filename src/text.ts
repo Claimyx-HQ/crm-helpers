@@ -94,18 +94,40 @@ export function normalizeEmailStatus(status: string | null | undefined): string 
 }
 
 /**
+ * True iff `v` represents "no data" for a CRM field: `null`, `undefined`,
+ * the empty string `''`, an empty array, or an empty object.
+ *
+ * Intended for "should I fill this field from the incoming row?" decisions
+ * in merge loops — the exact predicate the enrichment merges in
+ * `enrichCompany` and `enrichLead` apply per-field before deciding whether
+ * an existing value should be overwritten.
+ *
+ * Note: this does NOT trim — a whitespace-only string like `'   '` is
+ * considered NON-empty. If you want whitespace coalescing, call
+ * `String(v).trim() === ''` yourself or use a stricter helper.
+ *
+ * Distinct from {@link equalEnough}: that one is a string normalizer used
+ * for change-detection (compare two values for equality); this one is a
+ * boolean predicate used for fill-decisions.
+ */
+export function isBlankCell(v: unknown): boolean {
+  if (v == null || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') {
+    return Object.keys(v as Record<string, unknown>).length === 0;
+  }
+  return false;
+}
+
+/**
  * Normalize a value for the {@link isUnchanged} compare. Null, undefined,
- * empty arrays, and empty objects all collapse to `''` so a row with an
- * empty container is treated as equal to a row with no value at all.
+ * empty arrays, and empty objects all collapse to `''` (via
+ * {@link isBlankCell}) so a row with an empty container is treated as
+ * equal to a row with no value at all.
  */
 export function equalEnough(v: unknown): string {
-  if (v == null) return '';
-  if (Array.isArray(v)) return v.length === 0 ? '' : JSON.stringify(v);
-  if (typeof v === 'object') {
-    return Object.keys(v as Record<string, unknown>).length === 0
-      ? ''
-      : JSON.stringify(v);
-  }
+  if (isBlankCell(v)) return '';
+  if (Array.isArray(v) || typeof v === 'object') return JSON.stringify(v);
   return String(v);
 }
 
