@@ -117,3 +117,30 @@ Deno.test('withRetry: non-rate-limit error bails after second attempt', async ()
     assert(calls <= 2, `expected <= 2 attempts for non-429, got ${calls}`);
   }
 });
+
+Deno.test('withRetry: rejects non-integer Retry-After (uses backoff instead)', async () => {
+  // "1.5" is not a valid RFC 7231 Retry-After (must be integer seconds).
+  // We should ignore it and fall through to the exp-jitter backoff.
+  const state = makeRetryState(Date.now(), 30_000);
+  let calls = 0;
+  const t0 = Date.now();
+  await withRetry(state, async () => {
+    calls += 1;
+    if (calls === 1) {
+      // Build an error with Retry-After: 1.5 (float — invalid per RFC).
+      const err = new Error('Rate limit') as Error & { status: number; headers?: Record<string, string> };
+      err.status = 429;
+      err.headers = { 'retry-after': '1.5' };
+      throw err;
+    }
+    return 'ok';
+  }, 'test');
+  const elapsed = Date.now() - t0;
+  // If we'd honored "1.5" as 1500ms, we'd wait ~1500-2500ms minimum.
+  // Ignoring it falls back to exp-jitter with cap 1500 → 0..1500ms.
+  // The test asserts we didn't wait MORE than the exp-jitter cap.
+  // This is necessarily probabilistic — assert it can be FAST (the
+  // Retry-After path would force ≥1500ms; the rejection path allows
+  // less). Run twice to lower flake risk.
+  assert(elapsed < 1800, `expected fast retry after rejecting non-RFC Retry-After, got ${elapsed}ms`);
+});

@@ -65,16 +65,27 @@ export function isDeadlineError(err: unknown): boolean {
   );
 }
 
+// Upper bound on per-attempt exponential-jitter wait. The exponential
+// growth (1500 * 2^attempt) is capped here so a stuck cooldown can't
+// eat the whole chunk budget.
+const EXP_BACKOFF_CAP_MS = 20_000;
+
+// Upper bound on the Retry-After floor (server hint). Capped slightly
+// higher than EXP_BACKOFF_CAP_MS because a server explicitly telling us
+// to wait longer is more trustworthy than our local exponential schedule,
+// but still bounded so a hostile/buggy server header can't park us
+// indefinitely.
+const RETRY_AFTER_CAP_MS = 30_000;
+
 /**
  * Retry a Base44 SDK call with rate-limit-aware exponential backoff.
  *
- * Uses **full jitter** (AWS-recommended) so parallel callers don't realign on
- * retry: each sleep is `random(0, min(20s, 1500 * 2^attempt))`. Honors a
- * `Retry-After` header (seconds) on the error if present, which Base44 may
- * send to indicate when the next call may succeed — Retry-After acts as a
- * floor on the wait, with an additional small randomized spread on top so
- * parallel callers receiving the same Retry-After value still de-correlate
- * instead of realigning at the floor.
+ * Uses **full jitter** so parallel callers don't realign on retry: each sleep
+ * is `random(0, min(20s, 1500 * 2^attempt))`. When the server sends a
+ * `Retry-After` header (seconds form), the wait is at least that value plus a
+ * small randomized spread (≤1s) so parallel callers receiving the same
+ * `Retry-After` still de-correlate — capped at 30s. So the EFFECTIVE max wait
+ * per attempt is `max(20s exp-jitter cap, 30s Retry-After cap)` = 30s.
  *
  * - Only retries on 429-class errors. Other errors bail after the second
  *   attempt so we don't burn the chunk budget on a deterministic failure.
@@ -114,10 +125,9 @@ export async function withRetry<T>(
         /rate.?limit|429/i.test((error as { message?: string })?.message || '');
       if (!isRateLimit && attempt >= 1) break;
 
-      // Full jitter exponential backoff: random(0, min(20s, 1500 * 2^attempt)).
-      // Capped at 20s so a stuck cooldown can't eat the whole chunk budget.
-      const cap = 20_000;
-      const exp = Math.min(cap, 1500 * Math.pow(2, attempt));
+      // Full jitter exponential backoff: random(0, min(EXP_BACKOFF_CAP_MS, 1500 * 2^attempt)).
+      // Capped at EXP_BACKOFF_CAP_MS so a stuck cooldown can't eat the whole chunk budget.
+      const exp = Math.min(EXP_BACKOFF_CAP_MS, 1500 * Math.pow(2, attempt));
       const jittered = Math.floor(Math.random() * exp);
 
       // If the response carried a Retry-After header (seconds), use it as a
@@ -135,7 +145,7 @@ export async function withRetry<T>(
       // documented bound from parseRetryAfterMs (otherwise a 30s Retry-After
       // could become 31s after jitter).
       const retryAfterJitter = retryAfterMs > 0
-        ? Math.min(30_000, retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000)))
+        ? Math.min(RETRY_AFTER_CAP_MS, retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000)))
         : 0;
       const backoff = Math.max(jittered, retryAfterJitter);
 
@@ -176,10 +186,15 @@ function parseRetryAfterMs(error: unknown): number {
   if (!raw && e?.response?.headers && typeof e.response.headers.get === 'function') {
     raw = e.response.headers.get('retry-after');
   }
-  if (!raw) return 0;
-  const seconds = Number(raw);
+  if (typeof raw !== 'string') return 0;
+  // RFC 7231: Retry-After is either a non-negative integer (seconds) or
+  // an HTTP-date. We only support the integer form — HTTP-date is rare
+  // for 429 responses and adds complexity for marginal gain. Reject
+  // forms like "1e3", "0.5", "+5", " 5 " by requiring strict integer.
+  if (!/^\d+$/.test(raw.trim())) return 0;
+  const seconds = Number(raw.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
-  return Math.min(30_000, Math.floor(seconds * 1000)); // cap at 30s
+  return Math.min(RETRY_AFTER_CAP_MS, seconds * 1000);
 }
 
 // ---------------------------------------------------------------------------
