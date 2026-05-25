@@ -156,11 +156,21 @@ export async function withRetry<T>(
       // hint into a 60s wait.
       const retryAfterMs = parseRetryAfterMs(error);
       // Add a small jitter spread (up to 1s) so parallel callers receiving
-      // the same Retry-After value don't realign at the floor. Then re-cap to
-      // RETRY_AFTER_CAP_MS so the final wait still respects the documented
-      // upper bound (otherwise a 30s Retry-After could become 31s after jitter).
+      // the same Retry-After value don't realign at the floor. Bound the
+      // jitter range by the headroom to RETRY_AFTER_CAP_MS — otherwise a
+      // Retry-After near the cap (e.g. 29500ms) plus random(0,1000) would
+      // produce values > 30000ms that all clamp down to exactly 30000ms,
+      // creating a pile-up of de-correlated callers right at the cap. By
+      // limiting jitter to `min(retryAfterMs, 1000, headroom)` the final
+      // wait stays within `[retryAfterMs, RETRY_AFTER_CAP_MS]` without
+      // collapsing to a single value when headroom is tight. When the
+      // server's Retry-After hint already equals the cap, there's no
+      // headroom and all callers wait the same (acceptable — they all
+      // got the same server hint, and the cap is a hard upper bound).
+      const headroom = Math.max(0, RETRY_AFTER_CAP_MS - retryAfterMs);
+      const retryAfterJitterRange = Math.min(retryAfterMs, 1000, headroom);
       const retryAfterJitter = retryAfterMs > 0
-        ? Math.min(RETRY_AFTER_CAP_MS, retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000)))
+        ? retryAfterMs + Math.floor(Math.random() * retryAfterJitterRange)
         : 0;
       const backoff = Math.max(jittered, retryAfterJitter);
 
