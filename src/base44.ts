@@ -134,16 +134,15 @@ export async function withRetry<T>(
       // floor on the wait — server is telling us when the next call may
       // succeed. We add a small extra jitter window on top so parallel
       // callers receiving the same Retry-After value still de-correlate
-      // instead of realigning at the floor. The added jitter is
-      // `random(0, min(retryAfterMs, 1000))` — proportional to the server's
-      // own hint, capped at 1s extra so we don't blow the budget on a small
-      // Retry-After.
+      // instead of realigning at the floor. The added jitter spread is up
+      // to 1s — bounded because Retry-After values are typically small
+      // (server hinting at when to retry) and we don't want to inflate a 30s
+      // hint into a 60s wait.
       const retryAfterMs = parseRetryAfterMs(error);
-      // Add a small jitter spread (proportional to the floor, capped at 1s)
-      // so parallel callers receiving the same Retry-After value don't realign.
-      // Then re-cap to RETRY_AFTER_CAP_MS so the final wait still respects the
-      // documented bound from parseRetryAfterMs (otherwise a 30s Retry-After
-      // could become 31s after jitter).
+      // Add a small jitter spread (up to 1s) so parallel callers receiving
+      // the same Retry-After value don't realign at the floor. Then re-cap to
+      // RETRY_AFTER_CAP_MS so the final wait still respects the documented
+      // upper bound (otherwise a 30s Retry-After could become 31s after jitter).
       const retryAfterJitter = retryAfterMs > 0
         ? Math.min(RETRY_AFTER_CAP_MS, retryAfterMs + Math.floor(Math.random() * Math.min(retryAfterMs, 1000)))
         : 0;

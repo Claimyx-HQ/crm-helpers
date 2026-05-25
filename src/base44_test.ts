@@ -19,10 +19,13 @@ Deno.test('withRetry: succeeds on first try', async () => {
   assertEquals(calls, 1);
 });
 
-Deno.test('withRetry: backoff has jitter — parallel rate-limited retries do not align', async () => {
-  // 20 independent withRetry chains, each rate-limited once, MUST sleep
-  // different amounts. Without jitter, identical inputs produce identical
-  // sleeps and the retries align — thundering herd.
+Deno.test('withRetry: jitter samples are spread across retries (anti-realign)', async () => {
+  // 20 sequential samples of a single rate-limited retry. Each runs to
+  // completion before the next starts — this is NOT testing concurrent
+  // execution; it's sampling the jitter distribution. The asserted spread
+  // (max − min > 400ms) proves the jitter draws are independent rather
+  // than identical, which is what prevents the thundering-herd realignment
+  // when real callers retry simultaneously in production.
   const samples: number[] = [];
   for (let i = 0; i < 20; i += 1) {
     const state = makeRetryState(Date.now(), 30_000);
