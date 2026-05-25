@@ -47,9 +47,13 @@ Deno.test('withRetry: backoff grows super-linearly (exponential, not linear)', a
   // Force several rate-limit retries and confirm the cooldown grows
   // super-linearly. Linear: 1500, 3000, 4500. Exponential cap: up to 12000.
   //
-  // Because we use full jitter (random(0, cap)), any single sample can
-  // shrink across attempts. Average across N chains to compare means —
-  // E[uniform(0, cap)] = cap/2, so means follow the cap schedule.
+  // Because we use full jitter (random(MIN_BACKOFF_MS, cap)), any single
+  // sample can shrink across attempts. Average across N chains to compare means —
+  // E[uniform(MIN_BACKOFF_MS, cap)] = (MIN_BACKOFF_MS + cap)/2 ≈ cap/2 for
+  // cap >> MIN_BACKOFF_MS. The means at later attempts (cap doubles) will
+  // still grow super-linearly even with the floor — the floor only shifts
+  // the lower bound, not the cap. Asserting lastAvg > firstAvg * 1.4
+  // holds with comfortable margin.
   const N = 8;
   const firsts: number[] = [];
   const lasts: number[] = [];
@@ -140,7 +144,7 @@ Deno.test('withRetry: rejects non-integer Retry-After (uses backoff instead)', a
   }, 'test');
   const elapsed = Date.now() - t0;
   // If we'd honored "1.5" as 1500ms, we'd wait ~1500-2500ms minimum.
-  // Ignoring it falls back to exp-jitter with cap 1500 → 0..1500ms.
+  // Ignoring it falls back to exp-jitter with cap 1500 → MIN_BACKOFF_MS..1500ms.
   // The test asserts the rejection-path wait is bounded by the exp-jitter
   // cap (~1500ms ceiling) rather than the Retry-After floor (≥1500ms).
   // The 1800ms upper bound gives ~20% headroom over the deterministic max,

@@ -88,8 +88,11 @@ const MIN_BACKOFF_MS = 50;
 /**
  * Retry a Base44 SDK call with rate-limit-aware exponential backoff.
  *
- * Uses **full jitter** so parallel callers don't realign on retry: each sleep
- * is `random(0, min(20s, 1500 * 2^attempt))`. When the server sends a
+ * Uses **full jitter** with a small floor (`MIN_BACKOFF_MS`) so parallel
+ * callers don't realign on retry AND a `Math.random()` result near 0
+ * doesn't produce a 0ms wait that would defeat the shared per-request
+ * cooldown. Per-attempt sleep is `random(MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
+ * 1500 * 2^attempt))`. When the server sends a
  * `Retry-After` header (seconds form), the wait is at least that value plus a
  * small randomized spread (≤1s) so parallel callers receiving the same
  * `Retry-After` still de-correlate — capped at 30s. So the EFFECTIVE max wait
@@ -206,7 +209,10 @@ function parseRetryAfterMs(error: unknown): number {
   // the digits-only check still applies after trimming.
   if (!/^\d+$/.test(raw.trim())) return 0;
   const seconds = Number(raw.trim());
-  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  // Per RFC 7231 §7.1.3, 0 means "retry immediately". We allow it through;
+  // the MIN_BACKOFF_MS floor in withRetry's main backoff calc prevents a
+  // truly 0ms wait, so accepting 0 here is safe and matches the spec.
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
   return Math.min(RETRY_AFTER_CAP_MS, seconds * 1000);
 }
 
