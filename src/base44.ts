@@ -65,16 +65,47 @@ export function isDeadlineError(err: unknown): boolean {
   );
 }
 
+// Upper bound on per-attempt exponential-jitter wait. The exponential
+// growth (1500 * 2^attempt) is capped here so a stuck cooldown can't
+// eat the whole chunk budget.
+const EXP_BACKOFF_CAP_MS = 20_000;
+
+// Upper bound on the Retry-After floor (server hint). Capped slightly
+// higher than EXP_BACKOFF_CAP_MS because a server explicitly telling us
+// to wait longer is more trustworthy than our local exponential schedule,
+// but still bounded so a hostile/buggy server header can't park us
+// indefinitely.
+const RETRY_AFTER_CAP_MS = 30_000;
+
+// Lower bound on per-attempt jitter so `Math.random()` near 0 doesn't
+// produce a 0ms wait. A 0ms backoff would defeat the shared
+// `state.rateLimitUntil` cooldown — sibling calls inside the same request
+// would keep hammering the API even when one just hit a 429. 50ms is short
+// enough to feel snappy on the rare case where retries succeed quickly,
+// long enough to give the throttler a tick to settle between callers.
+const MIN_BACKOFF_MS = 50;
+
 /**
  * Retry a Base44 SDK call with rate-limit-aware exponential backoff.
+ *
+ * Uses **full jitter** with a small floor (`MIN_BACKOFF_MS`) so parallel
+ * callers don't realign on retry AND a `Math.random()` result near 0
+ * doesn't produce a 0ms wait that would defeat the shared per-request
+ * cooldown. Per-attempt sleep is uniform in `[MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
+ * 1500 * 2^attempt))` (half-open — the cap itself is never returned, matching
+ * `Math.random()` semantics). When the server sends a
+ * `Retry-After` header (seconds form), the wait is at least that value plus a
+ * small randomized spread (≤1s) so parallel callers receiving the same
+ * `Retry-After` still de-correlate — capped at 30s. So the EFFECTIVE max wait
+ * per attempt is `max(20s exp-jitter cap, 30s Retry-After cap)` = 30s.
  *
  * - Only retries on 429-class errors. Other errors bail after the second
  *   attempt so we don't burn the chunk budget on a deterministic failure.
  * - Always respects the chunk deadline — if we're past it, throws so the
  *   outer loop can return a clean `in_progress` for the next chunk to retry.
  * - Honors and updates the shared `state.rateLimitUntil` cooldown, so
- *   parallel sibling calls don't keep hammering the API while one is backing
- *   off.
+ *   parallel sibling calls inside the same request don't keep hammering the
+ *   API while one is backing off.
  *
  * The `label` is included in the deadline-exceeded error message — pass
  * something descriptive ("Lead.filter(email)", "Apollo /accounts/search")
@@ -105,7 +136,44 @@ export async function withRetry<T>(
         status === 429 ||
         /rate.?limit|429/i.test((error as { message?: string })?.message || '');
       if (!isRateLimit && attempt >= 1) break;
-      const backoff = Math.min(20_000, 1500 * (attempt + 1));
+
+      // Full jitter exponential backoff: random(MIN_BACKOFF_MS, min(EXP_BACKOFF_CAP_MS,
+      // 1500 * 2^attempt)). Capped at EXP_BACKOFF_CAP_MS so a stuck cooldown can't
+      // eat the whole chunk budget. Floored at MIN_BACKOFF_MS so a `Math.random()`
+      // result near 0 doesn't produce a 0ms wait that defeats the shared
+      // `state.rateLimitUntil` cooldown (a 0ms entry means sibling calls inside
+      // the same request would still hammer the API even when one just hit a 429).
+      const exp = Math.min(EXP_BACKOFF_CAP_MS, 1500 * Math.pow(2, attempt));
+      const jittered = MIN_BACKOFF_MS + Math.floor(Math.random() * Math.max(0, exp - MIN_BACKOFF_MS));
+
+      // If the response carried a Retry-After header (seconds), use it as a
+      // floor on the wait — server is telling us when the next call may
+      // succeed. We add a small extra jitter window on top so parallel
+      // callers receiving the same Retry-After value still de-correlate
+      // instead of realigning at the floor. The added jitter spread is up
+      // to 1s — bounded because Retry-After values are typically small
+      // (server hinting at when to retry) and we don't want to inflate a 30s
+      // hint into a 60s wait.
+      const retryAfterMs = parseRetryAfterMs(error);
+      // Add a small jitter spread (up to 1s) so parallel callers receiving
+      // the same Retry-After value don't realign at the floor. Bound the
+      // jitter range by the headroom to RETRY_AFTER_CAP_MS — otherwise a
+      // Retry-After near the cap (e.g. 29500ms) plus random(0,1000) would
+      // produce values > 30000ms that all clamp down to exactly 30000ms,
+      // creating a pile-up of de-correlated callers right at the cap. By
+      // limiting jitter to `min(retryAfterMs, 1000, headroom)` the final
+      // wait stays within `[retryAfterMs, RETRY_AFTER_CAP_MS]` without
+      // collapsing to a single value when headroom is tight. When the
+      // server's Retry-After hint already equals the cap, there's no
+      // headroom and all callers wait the same (acceptable — they all
+      // got the same server hint, and the cap is a hard upper bound).
+      const headroom = Math.max(0, RETRY_AFTER_CAP_MS - retryAfterMs);
+      const retryAfterJitterRange = Math.min(retryAfterMs, 1000, headroom);
+      const retryAfterJitter = retryAfterMs > 0
+        ? retryAfterMs + Math.floor(Math.random() * retryAfterJitterRange)
+        : 0;
+      const backoff = Math.max(jittered, retryAfterJitter);
+
       if (isRateLimit) {
         state.rateLimitUntil = Math.max(
           state.rateLimitUntil,
@@ -120,6 +188,72 @@ export async function withRetry<T>(
     }
   }
   throw (lastError as Error) || new Error(`${label} failed`);
+}
+
+/**
+ * Parse a `Retry-After` header (seconds form only) from a thrown error.
+ * HTTP-date form is intentionally unsupported — it's rare for 429
+ * responses and adds complexity for marginal gain.
+ *
+ * Returns the wait floor in milliseconds, capped at `RETRY_AFTER_CAP_MS`.
+ * Returns `0` when:
+ *   - the header is absent or in a shape we can't read,
+ *   - the value isn't a strict non-negative integer (e.g. `"1e3"`, `"0.5"`),
+ *   - the value parses to a negative number, OR
+ *   - the value is an explicit `Retry-After: 0` (RFC 7231 §7.1.3 "retry
+ *     immediately").
+ *
+ * The caller (`withRetry`) cannot distinguish these cases by return value
+ * alone, and intentionally treats them identically: it then layers full
+ * exponential jitter with the `MIN_BACKOFF_MS` floor on top, so an
+ * explicit 0 still produces a small (≥ MIN_BACKOFF_MS) wait instead of
+ * hammering the API immediately. If a caller ever needs to distinguish
+ * "no header" from "header said 0", switch to returning `number | null`
+ * here AND update `withRetry`'s downstream logic.
+ *
+ * Looks in two shapes: `error.headers` (plain object) and
+ * `error.response.headers` (fetch Response.headers, with a `.get()` method).
+ *
+ * Note: `src/quo.ts` has a related `parseRetryAfter` for fetch-Response
+ * headers (returns `number | null`, supports HTTP-date form). We keep this
+ * one separate because its input shape (SDK error objects) and output
+ * contract differ. Unifying both behind a shared helper is a worthwhile
+ * future refactor but out of scope for this PR.
+ */
+function parseRetryAfterMs(error: unknown): number {
+  const e = error as {
+    headers?: Record<string, string>;
+    response?: { headers?: { get?: (k: string) => string | null } };
+  };
+  let raw: string | null | undefined;
+  if (e?.headers && typeof e.headers === 'object') {
+    // HTTP header names are case-insensitive (RFC 9110 §5.1). Some clients
+    // surface non-canonical casing (e.g. 'Retry-after', 'RETRY-AFTER').
+    // Walk the keys to find any case variant rather than guessing two.
+    for (const k of Object.keys(e.headers)) {
+      if (k.toLowerCase() === 'retry-after') {
+        raw = e.headers[k];
+        break;
+      }
+    }
+  }
+  if (!raw && e?.response?.headers && typeof e.response.headers.get === 'function') {
+    raw = e.response.headers.get('retry-after');
+  }
+  if (typeof raw !== 'string') return 0;
+  // RFC 7231: Retry-After is either a non-negative integer (seconds) or
+  // an HTTP-date. We only support the integer form — HTTP-date is rare
+  // for 429 responses and adds complexity for marginal gain. Reject forms
+  // like "1e3", "0.5", "+5" by requiring strict integer digits. Surrounding
+  // whitespace is trimmed (HTTP headers commonly carry it) before validation;
+  // the digits-only check still applies after trimming.
+  if (!/^\d+$/.test(raw.trim())) return 0;
+  const seconds = Number(raw.trim());
+  // Per RFC 7231 §7.1.3, 0 means "retry immediately". We allow it through;
+  // the MIN_BACKOFF_MS floor in withRetry's main backoff calc prevents a
+  // truly 0ms wait, so accepting 0 here is safe and matches the spec.
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
+  return Math.min(RETRY_AFTER_CAP_MS, seconds * 1000);
 }
 
 // ---------------------------------------------------------------------------
