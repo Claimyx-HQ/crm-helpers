@@ -1,6 +1,7 @@
 // crm-helpers/src/settings_test.ts
 import { assertEquals } from 'jsr:@std/assert@^1.0.0';
 import {
+  _settingsCacheSize,
   clearSettingsCache,
   getSetting,
   type SettingEntity,
@@ -70,6 +71,46 @@ Deno.test('getSetting: cache respects TTL — expired entries trigger re-read', 
   await getSetting<number>(entity, 'k', 0, { cacheTtlSeconds: 0.01 });
   // Both calls hit the entity — the cached value expired between them.
   assertEquals(calls.filter.length, 2);
+});
+
+// Regression: expired entries must be evicted from the Map on the next
+// read, otherwise a long-running worker that iterates over many distinct
+// keys would grow the cache unboundedly.
+Deno.test('getSetting: expired entries are evicted from cache on next read', async () => {
+  clearSettingsCache();
+  const { entity: e1 } = makeFakeSetting([
+    { id: 's_1', key: 'k1', value_type: 'number', value: 1, default_value: 1 },
+  ]);
+  const { entity: e2 } = makeFakeSetting([
+    { id: 's_2', key: 'k2', value_type: 'number', value: 2, default_value: 2 },
+  ]);
+  // Seed the cache with 2 entries on a 10ms TTL.
+  await getSetting<number>(e1, 'k1', 0, { cacheTtlSeconds: 0.01 });
+  await getSetting<number>(e2, 'k2', 0, { cacheTtlSeconds: 0.01 });
+  assertEquals(_settingsCacheSize(), 2);
+
+  // Wait until both expire.
+  await new Promise((r) => setTimeout(r, 25));
+
+  // Re-read only k1. The expired k1 entry should be evicted, then the fresh
+  // value re-cached. k2 stays expired-but-still-in-map until its own read.
+  await getSetting<number>(e1, 'k1', 0, { cacheTtlSeconds: 0.01 });
+  // k1 was evicted then re-added → still 1 entry for k1, plus the stale k2.
+  // (eviction happens on access; we never touched k2 again so it stays.)
+  assertEquals(_settingsCacheSize(), 2);
+
+  // Re-read k2 after it's also expired. Same eviction-then-rewrite path.
+  await getSetting<number>(e2, 'k2', 0, { cacheTtlSeconds: 0.01 });
+  assertEquals(_settingsCacheSize(), 2);
+
+  // Now wait again until both expire, then read with a missing row that
+  // should NOT cache. The expired entry must still be evicted, so cache
+  // size drops.
+  await new Promise((r) => setTimeout(r, 25));
+  const { entity: empty } = makeFakeSetting([]); // no rows
+  await getSetting<number>(empty, 'k1', 0, { cacheTtlSeconds: 0.01 });
+  // k1 was expired → evicted; missing row → not re-cached. Only k2 remains.
+  assertEquals(_settingsCacheSize(), 1);
 });
 
 Deno.test('getSetting: cacheTtlSeconds=0 bypasses cache entirely', async () => {

@@ -107,6 +107,8 @@ const UPSERT_LOOKUP_SORT = 'created_date';
  * Treat a value as "blank" for `merge: 'fill_blanks'` purposes. Blank means
  * null, undefined, empty string, empty array, or empty plain object. Other
  * falsy primitives (`0`, `false`) are NOT blank — they're meaningful values.
+ * Non-plain object instances (Date, Map, Set, custom classes) are NEVER
+ * blank even when they expose no enumerable own keys.
  *
  * Mirrors `isBlankCell` from `./text.ts` semantically, kept inline to avoid a
  * cross-module import cycle and to give this helper a self-contained dedup
@@ -116,7 +118,15 @@ function isBlank(value: unknown): boolean {
   if (value === null || value === undefined) return true;
   if (typeof value === 'string') return value === '';
   if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === 'object') return Object.keys(value).length === 0;
+  if (typeof value === 'object') {
+    // Only plain `{}` objects count as blank. Date, Map, Set, or any custom
+    // class instance has a non-Object constructor and should always be
+    // treated as a meaningful value — even if Object.keys returns empty.
+    const proto = Object.getPrototypeOf(value);
+    const isPlain = proto === null || proto === Object.prototype;
+    if (!isPlain) return false;
+    return Object.keys(value).length === 0;
+  }
   return false;
 }
 

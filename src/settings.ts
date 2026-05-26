@@ -184,6 +184,9 @@ export async function getSetting<T = unknown>(
     if (cached && cached.expiresAt > now) {
       return cached.value as T;
     }
+    // Evict expired entries so a long-running Deno worker that iterates over
+    // many distinct setting keys doesn't grow the Map unboundedly.
+    if (cached) cache.delete(key);
   }
 
   const matches = await settingEntity.filter({ key }, SETTINGS_LOOKUP_SORT, 1);
@@ -221,4 +224,13 @@ export async function getSetting<T = unknown>(
  */
 export function clearSettingsCache(): void {
   cache.clear();
+}
+
+/**
+ * Internal: current number of entries in the in-process settings cache.
+ * Exported for tests that need to verify expiry-eviction behavior. Not part
+ * of the supported API — do not use from application code.
+ */
+export function _settingsCacheSize(): number {
+  return cache.size;
 }

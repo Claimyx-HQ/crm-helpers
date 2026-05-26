@@ -347,6 +347,51 @@ Deno.test('upsertByKey: overwrite — null is honored as explicit clear, undefin
   assertEquals(rows.c_1.source, 'apollo');
 });
 
+// Regression: isBlank treats only plain {} as blank — class instances with no
+// enumerable own keys (Date, Map, Set, custom classes) must be treated as
+// meaningful values and NEVER overwritten under fill_blanks.
+Deno.test('upsertByKey: fill_blanks treats Date as non-blank (not an empty object)', async () => {
+  const existingDate = new Date('2025-01-01T00:00:00Z');
+  interface CompanyWithDate extends Company {
+    last_synced_at?: Date | null;
+  }
+  // Reuse the makeFakeEntity setup but with a Date field.
+  const rows: Record<string, CompanyWithDate> = {
+    c_1: { id: 'c_1', domain: 'example.com', last_synced_at: existingDate },
+  };
+  const calls = { update: [] as Array<{ id: string; data: Record<string, unknown> }> };
+  const entity: UpsertEntity<CompanyWithDate> = {
+    async filter(_where, _sort, _limit) {
+      return Object.values(rows);
+    },
+    async create(data) {
+      const id = `c_${Object.keys(rows).length + 1}`;
+      const row: CompanyWithDate = {
+        id,
+        ...(data as Partial<CompanyWithDate>),
+      };
+      rows[id] = row;
+      return row;
+    },
+    async update(id, data) {
+      calls.update.push({ id, data });
+      rows[id] = { ...rows[id], ...(data as Partial<CompanyWithDate>) };
+      return rows[id];
+    },
+  };
+  const result = await upsertByKey<CompanyWithDate>(entity, {
+    keys: [{ field: 'domain', value: 'example.com' }],
+    // Try to overwrite the Date — but under fill_blanks the existing Date is
+    // non-blank so the write should be skipped.
+    data: { last_synced_at: new Date('2026-06-01T00:00:00Z') },
+    merge: 'fill_blanks',
+  });
+  assertEquals(result.action, 'noop');
+  assertEquals(calls.update.length, 0);
+  // Existing Date is unchanged.
+  assertEquals(rows.c_1.last_synced_at?.toISOString(), '2025-01-01T00:00:00.000Z');
+});
+
 // Regression: a key whose value is undefined/null/empty must NOT trigger a
 // filter call. If undefined gets dropped during JSON transport, the filter
 // would devolve into `{}` and match the first row in the table, causing an
