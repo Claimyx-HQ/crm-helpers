@@ -141,10 +141,12 @@ const UPDATE_RETRY_ATTEMPTS = 3;
 const UPDATE_RETRY_BASE_MS = 100;
 
 /**
- * Retry an update operation with exponential backoff. Failures up to
- * `attempts - 1` are swallowed (warned to console); the final failure is
- * re-thrown. Caller catches and emits a structured warn around the whole
- * call — see callers in `withTaskRun` below.
+ * Retry an update operation with exponential backoff. Intermediate failures
+ * are silently swallowed (the typical transient SDK error recovers on retry
+ * and per-attempt noise would clutter cron logs); only the final failure is
+ * re-thrown. The single caller (`withTaskRun`) wraps this in a try/catch and
+ * emits one structured `console.warn` if all `UPDATE_RETRY_ATTEMPTS` attempts
+ * are exhausted — see the catch blocks in `withTaskRun` below.
  */
 async function updateWithRetry(
   entity: TaskRunEntity,
