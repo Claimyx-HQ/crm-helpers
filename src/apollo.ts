@@ -200,7 +200,11 @@ export function pickDirect(numbers: PhoneNumberEntry[]): string {
   return d ? d.number : '';
 }
 
-/** First entry of a given type from `derivePhoneNumbers`, or empty string. */
+/**
+ * First entry of the given type from the provided phone-number list, or
+ * empty string. Works on lists from either `derivePhoneNumbers` or
+ * `mergePhoneShortcuts` — both produce the same `PhoneNumberEntry[]` shape.
+ */
 export function pickByType(numbers: PhoneNumberEntry[], type: PhoneType): string {
   const m = numbers.find((p) => p.type === type);
   return m ? m.number : '';
@@ -212,7 +216,7 @@ export function pickPrimary(numbers: PhoneNumberEntry[]): PhoneNumberEntry | nul
 }
 
 /** Shortcut phone fields Apollo returns at the top level of a contact. */
-interface ApolloPhoneShortcuts {
+export interface ApolloPhoneShortcuts {
   phone?: string;
   corporate_phone?: string;
   mobile_phone?: string;
