@@ -94,7 +94,7 @@ export const CURRENT_TECHNOLOGIES_CAP = 30; // ~3 categories × 10 entries
  * {@link PhoneType} enum shared with `./enums.ts`. Apollo isn't fully
  * consistent — some payloads use `mobile`, some `mobile_phone`, some
  * `cell`. Buckets every entry into one of {mobile, direct, hq, work,
- * other} so the UI can label and pick.
+ * home, other} so the UI can label and pick.
  */
 export function mapPhoneType(typeRaw: string | null | undefined): PhoneType {
   if (!typeRaw) return 'other';
@@ -231,10 +231,12 @@ const SHORTCUT_TO_TYPE: Record<keyof ApolloPhoneShortcuts, PhoneType> = {
 };
 
 function dedupKey(num: string): string {
-  // Use the canonical E.164 normalizer so "+1 (415) 555-0000" and
-  // "4155550000" dedupe — otherwise Apollo's shortcut fields (which often
-  // lack the country code) would never match the array entries (which
-  // usually include it).
+  // Reuse the project's `normalizePhone` join key (a `+<digits>` form that
+  // prefixes a bare 10-digit input with `+1`) so "+1 (415) 555-0000" and
+  // "4155550000" dedupe. Without this Apollo's shortcut fields (which often
+  // arrive without the country code) would never match the array entries
+  // (which usually include it). This is the same normalization used as the
+  // contact-merge join key elsewhere in the pipeline, not strict E.164.
   return normalizePhone(num);
 }
 
@@ -246,9 +248,10 @@ function dedupKey(num: string): string {
  * the employer's HQ line attributed to the contact and is sometimes only
  * exposed via the shortcut — so reading the array alone loses data.
  *
- * Dedupes by digits-only canonical form so different formattings of the same
- * number ("+1 (415) 555-0000" vs "415-555-0000") don't both land. The first
- * occurrence wins, and the primary flag from the structured array is
+ * Dedupes via the project's `normalizePhone` join key (a `+<digits>` form
+ * that adds `+1` to a bare 10-digit input) so different formattings of the
+ * same number ("+1 (415) 555-0000" vs "415-555-0000") don't both land. The
+ * first occurrence wins, and the primary flag from the structured array is
  * preserved; appended shortcut entries are never marked primary, but a
  * primary is assigned to the first entry if none was set.
  */
@@ -1289,10 +1292,27 @@ export function normalizeContact(
     contact.sanitized_phone ||
     contact.phone ||
     '';
+  // Trim entries, drop blanks, and case-insensitively exclude the primary
+  // `contact.email` so the array never carries the same address twice in
+  // different casings. De-dupe across the array itself by the same lowercase
+  // key so Apollo dupes don't leak through either.
+  const primaryEmailKey = (contact.email || '').trim().toLowerCase();
   const personalEmails = Array.isArray(contact.personal_emails)
-    ? contact.personal_emails
-        .filter((e): e is string => typeof e === 'string' && e.length > 0)
-        .filter((e) => e !== contact.email)
+    ? (() => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const raw of contact.personal_emails) {
+          if (typeof raw !== 'string') continue;
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          const key = trimmed.toLowerCase();
+          if (key === primaryEmailKey) continue;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(trimmed);
+        }
+        return out;
+      })()
     : [];
   const employmentHistory = Array.isArray(contact.employment_history)
     ? contact.employment_history.map((e) => ({

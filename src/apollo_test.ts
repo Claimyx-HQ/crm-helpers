@@ -141,3 +141,23 @@ Deno.test('normalizeContact: empty personal_emails defaults to []', () => {
   );
   assertEquals(lead.personal_emails, []);
 });
+
+Deno.test('normalizeContact: personal_emails trims, drops blanks, case-insensitive primary dedupe', () => {
+  const lead = normalizeContact(
+    {
+      first_name: 'Jane',
+      last_name: 'Doe',
+      email: 'Jane@Acme.com',
+      personal_emails: [
+        '   ',                       // whitespace-only → dropped
+        '',                          // empty → dropped
+        '  jane.personal@gmail.com ',// kept (trimmed)
+        'JANE@acme.com',             // same as primary, different case → dropped
+        'jane.personal@gmail.com',   // dup of above → dropped
+        'extra@yahoo.com',
+      ],
+    },
+    'stage-1',
+  );
+  assertEquals(lead.personal_emails, ['jane.personal@gmail.com', 'extra@yahoo.com']);
+});
