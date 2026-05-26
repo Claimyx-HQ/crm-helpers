@@ -132,9 +132,17 @@ function isBlank(value: unknown): boolean {
 
 /**
  * Union two array values, preserving order: existing entries first, then any
- * new entries not already present. Equality is by `JSON.stringify` so nested
- * objects compare structurally. Falls back to wrapping a non-array existing
- * value as `[existing]`.
+ * new entries not already present.
+ *
+ * Equality is `JSON.stringify(a) === JSON.stringify(b)` — a serialization
+ * compare, NOT a structural one. Two objects with the same content but
+ * different key insertion order will dedup differently, and edge values
+ * like `NaN` / `Infinity` collapse to `null`. This is intentional and
+ * sufficient for the actual sales-crm callers (`mergeArrays` is only used
+ * on string arrays — import_batch_ids, tags). Switch to a canonical-key
+ * hash if you ever need true structural dedup.
+ *
+ * Falls back to wrapping a non-array existing value as `[existing]`.
  */
 function unionArrays(existing: unknown, incoming: unknown): unknown[] {
   const left = Array.isArray(existing)

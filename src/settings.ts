@@ -184,8 +184,14 @@ export async function getSetting<T = unknown>(
     if (cached && cached.expiresAt > now) {
       return cached.value as T;
     }
-    // Evict expired entries so a long-running Deno worker that iterates over
-    // many distinct setting keys doesn't grow the Map unboundedly.
+    // Access-based eviction: when the current key's cached entry is expired,
+    // drop it from the Map before re-reading. This bounds the cache for the
+    // typical sales-crm pattern (the same handful of setting keys read
+    // repeatedly on every cron tick / request). It does NOT sweep keys
+    // that were loaded once and never re-read — a worker that touches many
+    // distinct keys once can still leave stale entries until each is
+    // re-accessed. A periodic sweep would be the next step if that pattern
+    // ever shows up, but it isn't worth the timer complexity yet.
     if (cached) cache.delete(key);
   }
 
