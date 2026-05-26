@@ -10,13 +10,15 @@ import {
 // Fake Setting entity client. Each test should call clearSettingsCache()
 // before exercising the helper so module-level cache state doesn't bleed.
 function makeFakeSetting(rows: SettingRecord[] = []) {
-  const calls: { filter: Array<{ query: Record<string, unknown>; limit?: number }> } = {
+  const calls: {
+    filter: Array<{ where: Record<string, unknown>; sort: string; limit: number }>;
+  } = {
     filter: [],
   };
   const entity: SettingEntity = {
-    async filter(query, options) {
-      calls.filter.push({ query, limit: options?.limit });
-      return rows.filter((r) => r.key === query.key);
+    async filter(where, sort, limit) {
+      calls.filter.push({ where, sort, limit });
+      return rows.filter((r) => r.key === where.key);
     },
   };
   return { entity, calls };
@@ -282,11 +284,13 @@ Deno.test('getSetting: NaN / Infinity values are invalid (number)', async () => 
   assertEquals(result, 42); // fallback because Infinity is not finite
 });
 
-Deno.test('getSetting: filter is called with limit:1 for cheap lookups', async () => {
+Deno.test('getSetting: filter is called with Base44 positional signature (sort + limit=1)', async () => {
   clearSettingsCache();
   const { entity, calls } = makeFakeSetting([
     { id: 's_1', key: 'k', value_type: 'number', value: 1, default_value: 1 },
   ]);
   await getSetting<number>(entity, 'k', 0);
   assertEquals(calls.filter[0].limit, 1);
+  // Newest-first so the most-recently-written Setting wins if duplicates exist.
+  assertEquals(calls.filter[0].sort, '-created_date');
 });

@@ -79,20 +79,29 @@ export interface UpsertResult<T> {
 
 /**
  * Minimal entity-client surface required by `upsertByKey`. Mirrors the Base44
- * SDK shape — `filter` returns rows matching a query object, `create` inserts
- * a new row, `update` patches an existing row by id. Typed permissively
- * (`Record<string, unknown>` over `T`) because the SDK types in @base44/sdk
- * are themselves loose; consumers pass their typed wrapper and the result is
- * cast to `T` at the boundary.
+ * SDK shape: `filter(where, sort, limit)` is the established positional
+ * signature in this repo (see `chunkedEntityScan` in `./base44.ts`), where
+ * `sort` is a Base44 sort string (field name for ascending, `'-field'` for
+ * descending). `create` inserts a new row, `update` patches an existing row
+ * by id. Typed permissively (`Record<string, unknown>` over `T`) because the
+ * SDK types in @base44/sdk are themselves loose; consumers pass their typed
+ * wrapper and the result is cast to `T` at the boundary.
  */
 export interface UpsertEntity<T extends { id: string }> {
   filter(
-    query: Record<string, unknown>,
-    options?: { limit?: number },
+    where: Record<string, unknown>,
+    sort: string,
+    limit: number,
   ): Promise<T[]>;
   create(data: Record<string, unknown>): Promise<T>;
   update(id: string, data: Record<string, unknown>): Promise<T>;
 }
+
+// Sort used by the natural-key lookup. Oldest-first ensures we pick a
+// deterministic canonical row when duplicates exist (Base44 has no unique
+// constraints, so duplicates can and do happen — see flow-catalog research
+// 14a). Sorting by created_date keeps the earliest row authoritative.
+const UPSERT_LOOKUP_SORT = 'created_date';
 
 /**
  * Treat a value as "blank" for `merge: 'fill_blanks'` purposes. Blank means
@@ -131,7 +140,10 @@ function unionArrays(existing: unknown, incoming: unknown): unknown[] {
   const seen = new Set<string>();
   const out: unknown[] = [];
   for (const v of [...left, ...right]) {
-    const key = JSON.stringify(v);
+    // JSON.stringify returns `undefined` (not a string) for undefined,
+    // functions, and symbols. Fall back to a sentinel so Set<string> stays
+    // type-safe and dedup keys are stable at runtime.
+    const key = JSON.stringify(v) ?? '__undefined__';
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(v);
@@ -247,7 +259,8 @@ export async function upsertByKey<T extends { id: string }>(
   for (const key of options.keys) {
     const matches = await entity.filter(
       { [key.field]: key.value },
-      { limit: 1 },
+      UPSERT_LOOKUP_SORT,
+      1,
     );
     const existing = matches?.[0];
     if (!existing) continue;

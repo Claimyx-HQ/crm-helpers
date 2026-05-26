@@ -74,14 +74,23 @@ export interface GetSettingOptions {
 
 /**
  * Minimal entity-client surface required by `getSetting`. Mirrors the
- * Base44 SDK shape — `filter` accepts a query and an optional `limit`.
+ * Base44 SDK shape: `filter(where, sort, limit)` is the established
+ * positional signature in this repo (see `chunkedEntityScan` in
+ * `./base44.ts`). `sort` is a Base44 sort string — `'-created_date'` to
+ * pick the most-recent row if duplicates exist.
  */
 export interface SettingEntity {
   filter(
-    query: Record<string, unknown>,
-    options?: { limit?: number },
+    where: Record<string, unknown>,
+    sort: string,
+    limit: number,
   ): Promise<SettingRecord[]>;
 }
+
+// Sort used by the Setting lookup. Newest-first so the most-recently-written
+// Setting row wins if duplicates exist (Base44 has no unique constraints —
+// see flow-catalog research 14a).
+const SETTINGS_LOOKUP_SORT = '-created_date';
 
 // In-process cache. Keyed on the Setting key. Each Deno worker has its own
 // instance — that's fine because settings change rarely and the cost of a
@@ -140,7 +149,7 @@ function validateSettingValue(
  * Behavior:
  *   1. Check the in-process cache. If present and not expired, return the
  *      cached value.
- *   2. Otherwise, call `settingEntity.filter({ key }, { limit: 1 })`.
+ *   2. Otherwise, call `settingEntity.filter({ key }, '-created_date', 1)`.
  *   3. If no row exists, return `fallbackDefault` and cache nothing — so
  *      the row appears if added later.
  *   4. If the row exists, validate `value` against `value_type` and
@@ -175,7 +184,7 @@ export async function getSetting<T = unknown>(
     }
   }
 
-  const matches = await settingEntity.filter({ key }, { limit: 1 });
+  const matches = await settingEntity.filter({ key }, SETTINGS_LOOKUP_SORT, 1);
   const row = matches?.[0];
   if (!row) {
     // No row → use the caller's fallback. Do NOT cache the absence; if

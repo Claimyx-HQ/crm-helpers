@@ -26,25 +26,25 @@ function makeFakeEntity(initial: Company[] = []) {
     rows[r.id] = { ...r };
   }
   const calls: {
-    filter: Array<{ query: Record<string, unknown>; limit?: number }>;
+    filter: Array<{ where: Record<string, unknown>; sort: string; limit: number }>;
     create: Array<Record<string, unknown>>;
     update: Array<{ id: string; data: Record<string, unknown> }>;
   } = { filter: [], create: [], update: [] };
 
   const entity: UpsertEntity<Company> = {
-    async filter(query, options) {
-      calls.filter.push({ query, limit: options?.limit });
+    async filter(where, sort, limit) {
+      calls.filter.push({ where, sort, limit });
       const matches: Company[] = [];
       for (const row of Object.values(rows)) {
         let isMatch = true;
-        for (const [k, v] of Object.entries(query)) {
+        for (const [k, v] of Object.entries(where)) {
           if ((row as unknown as Record<string, unknown>)[k] !== v) {
             isMatch = false;
             break;
           }
         }
         if (isMatch) matches.push(row);
-        if (options?.limit && matches.length >= options.limit) break;
+        if (limit && matches.length >= limit) break;
       }
       return matches;
     },
@@ -111,17 +111,20 @@ Deno.test('upsertByKey: second key matches when first misses → filter called t
   assertEquals(result.matchedKey?.field, 'name_normalized');
   // Verify order: domain first (miss), then name_normalized (hit).
   assertEquals(calls.filter.length, 2);
-  assertEquals(Object.keys(calls.filter[0].query)[0], 'domain');
-  assertEquals(Object.keys(calls.filter[1].query)[0], 'name_normalized');
+  assertEquals(Object.keys(calls.filter[0].where)[0], 'domain');
+  assertEquals(Object.keys(calls.filter[1].where)[0], 'name_normalized');
 });
 
-Deno.test('upsertByKey: filter uses limit:1 for cheap lookups', async () => {
+Deno.test('upsertByKey: filter uses Base44 positional signature with limit=1', async () => {
   const { entity, calls } = makeFakeEntity();
   await upsertByKey(entity, {
     keys: [{ field: 'domain', value: 'x.com' }],
     data: { name: 'X' },
   });
   assertEquals(calls.filter[0].limit, 1);
+  // Sort is part of the contract — oldest first so duplicates resolve
+  // deterministically to the canonical row.
+  assertEquals(calls.filter[0].sort, 'created_date');
 });
 
 Deno.test('upsertByKey: noop — fill_blanks merge with existing non-blank values', async () => {
