@@ -308,3 +308,55 @@ Deno.test('upsertByKey: fill_blanks does not write blank → blank (skips no-op 
   assertEquals(result.action, 'noop');
   assertEquals(calls.update.length, 0);
 });
+
+// Regression: callers writing `{ name: maybeName }` where maybeName is
+// undefined must not trigger an "updated" action and must not emit
+// `patch[field] = undefined` (which JSON transports may silently drop).
+// To explicitly clear a field, callers must pass `null`.
+Deno.test('upsertByKey: overwrite skips undefined incoming values (no spurious update)', async () => {
+  const { entity, rows, calls } = makeFakeEntity([
+    { id: 'c_1', domain: 'example.com', name: 'Existing Name' },
+  ]);
+  const result = await upsertByKey(entity, {
+    keys: [{ field: 'domain', value: 'example.com' }],
+    data: { name: undefined, source: undefined } as Partial<Company>,
+    merge: 'overwrite',
+  });
+  assertEquals(result.action, 'noop');
+  assertEquals(calls.update.length, 0);
+  assertEquals(rows.c_1.name, 'Existing Name');
+});
+
+Deno.test('upsertByKey: overwrite — null is honored as explicit clear, undefined is not', async () => {
+  const { entity, rows, calls } = makeFakeEntity([
+    { id: 'c_1', domain: 'example.com', name: 'Existing', source: 'apollo' },
+  ]);
+  const result = await upsertByKey(entity, {
+    keys: [{ field: 'domain', value: 'example.com' }],
+    data: { name: null, source: undefined } as Partial<Company>,
+    merge: 'overwrite',
+  });
+  assertEquals(result.action, 'updated');
+  assertEquals(calls.update.length, 1);
+  // Only `name` was written; `source: undefined` was skipped.
+  assertEquals(calls.update[0].data, { name: null });
+  assertEquals(rows.c_1.name, null);
+  assertEquals(rows.c_1.source, 'apollo');
+});
+
+Deno.test('upsertByKey: fill_blanks — undefined incoming values are skipped (consistent with overwrite)', async () => {
+  const { entity, rows, calls } = makeFakeEntity([
+    { id: 'c_1', domain: 'example.com', name: null, source: null },
+  ]);
+  const result = await upsertByKey(entity, {
+    keys: [{ field: 'domain', value: 'example.com' }],
+    data: { name: undefined, source: 'apollo' } as Partial<Company>,
+    merge: 'fill_blanks',
+  });
+  assertEquals(result.action, 'updated');
+  assertEquals(calls.update.length, 1);
+  // Only `source` filled the blank; `name: undefined` was skipped.
+  assertEquals(calls.update[0].data, { source: 'apollo' });
+  assertEquals(rows.c_1.source, 'apollo');
+  assertEquals(rows.c_1.name, null);
+});

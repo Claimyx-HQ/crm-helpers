@@ -159,6 +159,12 @@ function buildUpdatePatch<T extends { id: string }>(
 
   for (const [field, incomingValue] of Object.entries(data)) {
     if (immutable.has(field)) continue;
+    // Treat `undefined` as "field not provided" — callers writing
+    // `{ name: maybeName }` with `maybeName === undefined` should not trigger
+    // an "updated" action and should not emit `patch[field] = undefined`
+    // (which JSON-transports may silently drop). To explicitly clear a field,
+    // callers must pass `null`.
+    if (incomingValue === undefined) continue;
     const existingValue = existingRow[field];
 
     if (arrayUnion.has(field)) {
