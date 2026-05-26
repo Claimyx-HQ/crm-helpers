@@ -52,7 +52,7 @@ export const SENIORITY_LABEL: Record<Seniority, string> = {
  * Enum of phone-number categories the CRM tracks on a Lead's `phone_numbers`
  * array. `other` is the catch-all for unclassified numbers.
  */
-export type PhoneType = 'mobile' | 'direct' | 'hq' | 'work' | 'other';
+export type PhoneType = 'mobile' | 'direct' | 'hq' | 'work' | 'home' | 'other';
 
 /**
  * Display label for each phone type. The original frontend map also carried
@@ -65,6 +65,7 @@ export const PHONE_TYPE_LABEL: Record<PhoneType, string> = {
   direct: 'Direct',
   hq: 'HQ',
   work: 'Work',
+  home: 'Home',
   other: 'Other',
 };
 

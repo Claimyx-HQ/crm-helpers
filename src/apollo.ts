@@ -18,7 +18,7 @@
 // state. Workspace fields use the same optional-typed shape so the
 // signature stays backward-compatible.
 
-import { buildLocation, extractDomain, normalizeEmailStatus } from './text.ts';
+import { buildLocation, extractDomain, normalizeEmailStatus, normalizePhone } from './text.ts';
 import { type PhoneType } from './enums.ts';
 import {
   deriveAccountClassifications,
@@ -94,7 +94,7 @@ export const CURRENT_TECHNOLOGIES_CAP = 30; // ~3 categories × 10 entries
  * {@link PhoneType} enum shared with `./enums.ts`. Apollo isn't fully
  * consistent — some payloads use `mobile`, some `mobile_phone`, some
  * `cell`. Buckets every entry into one of {mobile, direct, hq, work,
- * other} so the UI can label and pick.
+ * home, other} so the UI can label and pick.
  */
 export function mapPhoneType(typeRaw: string | null | undefined): PhoneType {
   if (!typeRaw) return 'other';
@@ -108,6 +108,7 @@ export function mapPhoneType(typeRaw: string | null | undefined): PhoneType {
     t === 'headquarters' ||
     t === 'main'
   ) return 'hq';
+  if (t.includes('home') || t === 'home_phone' || t === 'residential') return 'home';
   if (t.includes('work') || t === 'office' || t === 'business') return 'work';
   return 'other';
 }
@@ -199,9 +200,96 @@ export function pickDirect(numbers: PhoneNumberEntry[]): string {
   return d ? d.number : '';
 }
 
+/**
+ * First entry of the given type from the provided phone-number list, or
+ * empty string. Works on lists from either `derivePhoneNumbers` or
+ * `mergePhoneShortcuts` — both produce the same `PhoneNumberEntry[]` shape.
+ */
+export function pickByType(numbers: PhoneNumberEntry[], type: PhoneType): string {
+  const m = numbers.find((p) => p.type === type);
+  return m ? m.number : '';
+}
+
 /** The entry flagged `primary` (or the first entry as fallback), or null. */
 export function pickPrimary(numbers: PhoneNumberEntry[]): PhoneNumberEntry | null {
   return numbers.find((p) => p.primary) || numbers[0] || null;
+}
+
+/** Shortcut phone fields Apollo returns at the top level of a contact. */
+export interface ApolloPhoneShortcuts {
+  phone?: string;
+  corporate_phone?: string;
+  mobile_phone?: string;
+  direct_phone?: string;
+  home_phone?: string;
+  other_phone?: string;
+}
+
+const SHORTCUT_TO_TYPE: Record<keyof ApolloPhoneShortcuts, PhoneType> = {
+  corporate_phone: 'hq',
+  mobile_phone: 'mobile',
+  direct_phone: 'direct',
+  home_phone: 'home',
+  other_phone: 'other',
+  phone: 'other',
+};
+
+function dedupKey(num: string): string {
+  // Reuse the project's `normalizePhone` join key (a `+<digits>` form that
+  // prefixes a bare 10-digit input with `+1`) so "+1 (415) 555-0000" and
+  // "4155550000" dedupe. Without this Apollo's shortcut fields (which often
+  // arrive without the country code) would never match the array entries
+  // (which usually include it). This is the same normalization used as the
+  // contact-merge join key elsewhere in the pipeline, not strict E.164.
+  return normalizePhone(num);
+}
+
+/**
+ * Merge Apollo's flat shortcut phone fields (`corporate_phone`,
+ * `mobile_phone`, `direct_phone`, `home_phone`, `other_phone`, `phone`) into
+ * an existing list derived from `phone_numbers[]`. Apollo doesn't always
+ * include the shortcut value as an array entry — e.g. `corporate_phone` is
+ * the employer's HQ line attributed to the contact and is sometimes only
+ * exposed via the shortcut — so reading the array alone loses data.
+ *
+ * Dedupes via the project's `normalizePhone` join key (a `+<digits>` form
+ * that adds `+1` to a bare 10-digit input) so different formattings of the
+ * same number ("+1 (415) 555-0000" vs "415-555-0000") don't both land. The
+ * first occurrence wins, and the primary flag from the structured array is
+ * preserved; appended shortcut entries are never marked primary, but a
+ * primary is assigned to the first entry if none was set.
+ */
+export function mergePhoneShortcuts(
+  numbers: PhoneNumberEntry[],
+  shortcuts: ApolloPhoneShortcuts,
+): PhoneNumberEntry[] {
+  const out: PhoneNumberEntry[] = numbers.map((p) => ({ ...p }));
+  const seen = new Set<string>();
+  for (const p of out) {
+    const k = dedupKey(p.number);
+    if (k) seen.add(k);
+  }
+  for (const field of Object.keys(SHORTCUT_TO_TYPE) as Array<keyof ApolloPhoneShortcuts>) {
+    const value = shortcuts[field];
+    if (!value) continue;
+    // Trim once and reuse for both dedup and the stored number — otherwise
+    // a whitespace-padded shortcut ("  4155550000  ") would dedupe to the
+    // same key as the clean form but land in `phone_numbers[]` with the
+    // padding intact.
+    const sanitized = String(value).trim();
+    if (!sanitized) continue;
+    const k = dedupKey(sanitized);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push({
+      type: SHORTCUT_TO_TYPE[field],
+      number: sanitized,
+      primary: false,
+      status: '',
+    });
+  }
+  if (out.length > 0 && !out.some((p) => p.primary)) out[0].primary = true;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -638,8 +726,19 @@ export interface ApolloContactInput {
   last_name?: string;
   email?: string;
   email_status?: string;
+  personal_emails?: string[];
   phone_numbers?: ApolloPhoneEntry[];
   sanitized_phone?: string;
+  // Shortcut phone fields Apollo returns alongside `phone_numbers[]`. The
+  // shortcuts and the structured array don't always overlap — Apollo can
+  // populate `corporate_phone` (the employer's HQ line attributed to the
+  // person) without listing it as an entry, so we read both and dedupe.
+  phone?: string;
+  corporate_phone?: string;
+  mobile_phone?: string;
+  direct_phone?: string;
+  home_phone?: string;
+  other_phone?: string;
   title?: string;
   headline?: string;
   organization?: ApolloOrganization;
@@ -889,6 +988,10 @@ export interface NormalizedLead {
   phone_numbers?: PhoneNumberEntry[];
   mobile_phone?: string;
   direct_phone?: string;
+  corporate_phone?: string;
+  home_phone?: string;
+  other_phone?: string;
+  personal_emails?: string[];
   phone_status?: PhoneStatus;
   time_zone?: string;
   person_city?: string;
@@ -1181,13 +1284,54 @@ export function normalizeContact(
 ): NormalizedLead {
   const org = contact.organization || contact.account || {};
   const emailStatus = normalizeEmailStatus(contact.email_status);
-  const phoneNumbers = derivePhoneNumbers(contact.phone_numbers);
-  const fallbackPhone =
-    pickPrimary(phoneNumbers)?.number ||
-    contact.phone_numbers?.[0]?.raw_number ||
-    contact.phone_numbers?.[0]?.sanitized_number ||
-    contact.sanitized_phone ||
-    '';
+  // Build the structured phone list from the array, then fold in any
+  // shortcut fields (corporate_phone, mobile_phone, etc.) that Apollo
+  // populated separately. See `mergePhoneShortcuts` for the rationale.
+  const phoneNumbers = mergePhoneShortcuts(derivePhoneNumbers(contact.phone_numbers), {
+    phone: contact.phone,
+    corporate_phone: contact.corporate_phone,
+    mobile_phone: contact.mobile_phone,
+    direct_phone: contact.direct_phone,
+    home_phone: contact.home_phone,
+    other_phone: contact.other_phone,
+  });
+  // Walk the fallback chain trimming each candidate so a whitespace-only
+  // shortcut (e.g. `contact.phone === '   '`) doesn't end up on the row
+  // — `mergePhoneShortcuts` already drops blanks from `phone_numbers[]`,
+  // so the legacy `phone` column needs the same guard for consistency.
+  const fallbackPhone = (
+    [
+      pickPrimary(phoneNumbers)?.number,
+      contact.phone_numbers?.[0]?.raw_number,
+      contact.phone_numbers?.[0]?.sanitized_number,
+      contact.sanitized_phone,
+      contact.phone,
+    ]
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .find((v) => v.length > 0)
+  ) || '';
+  // Trim entries, drop blanks, and case-insensitively exclude the primary
+  // `contact.email` so the array never carries the same address twice in
+  // different casings. De-dupe across the array itself by the same lowercase
+  // key so Apollo dupes don't leak through either.
+  const primaryEmailKey = (contact.email || '').trim().toLowerCase();
+  const personalEmails = Array.isArray(contact.personal_emails)
+    ? (() => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const raw of contact.personal_emails) {
+          if (typeof raw !== 'string') continue;
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          const key = trimmed.toLowerCase();
+          if (key === primaryEmailKey) continue;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(trimmed);
+        }
+        return out;
+      })()
+    : [];
   const employmentHistory = Array.isArray(contact.employment_history)
     ? contact.employment_history.map((e) => ({
         organization_name: e?.organization_name || '',
@@ -1256,6 +1400,10 @@ export function normalizeContact(
     phone_numbers: phoneNumbers,
     mobile_phone: pickMobile(phoneNumbers),
     direct_phone: pickDirect(phoneNumbers),
+    corporate_phone: pickByType(phoneNumbers, 'hq'),
+    home_phone: pickByType(phoneNumbers, 'home'),
+    other_phone: pickByType(phoneNumbers, 'other'),
+    personal_emails: personalEmails,
     phone_status: pickPrimary(phoneNumbers)?.status || '',
     time_zone: contact.time_zone || '',
     person_city: contact.person_city || contact.city || '',
