@@ -1,6 +1,6 @@
 {
   "name": "@claimyx/crm-helpers",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Shared TypeScript helpers for the Claimyx CRM (Base44 backend functions and elsewhere).",
   "license": "MIT",
   "exports": {
@@ -11,11 +11,15 @@
     "./base44": "./src/base44.ts",
     "./enums": "./src/enums.ts",
     "./format": "./src/format.ts",
+    "./import-batch": "./src/import-batch.ts",
     "./mutation-log": "./src/mutation-log.ts",
     "./phone": "./src/phone.ts",
     "./quo": "./src/quo.ts",
+    "./settings": "./src/settings.ts",
+    "./task-run": "./src/task-run.ts",
     "./text": "./src/text.ts",
-    "./triggers": "./src/triggers.ts"
+    "./triggers": "./src/triggers.ts",
+    "./upsert": "./src/upsert.ts"
   },
   "publish": {
     "include": [
