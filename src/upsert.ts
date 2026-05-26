@@ -223,7 +223,9 @@ function buildUpdatePatch<T extends { id: string }>(
  *
  * Behavior:
  *   1. For each key in `options.keys` (in order), call
- *      `entity.filter({ [field]: value }, { limit: 1 })`.
+ *      `entity.filter({ [field]: value }, 'created_date', 1)` — the Base44
+ *      positional `(where, sort, limit)` signature. Oldest-first sort so
+ *      duplicates resolve deterministically to the canonical row.
  *   2. The first key that returns a row wins. The existing row is updated
  *      according to `merge` strategy:
  *        - `'fill_blanks'` (default): only write fields where the existing

@@ -96,11 +96,14 @@ export interface WithTaskRunOptions {
  *   failed task this is undefined.
  * - `error`: the thrown error, attached non-thrown so callers can branch
  *   without try/catch. On succeeded/partial this is undefined.
- * - `taskRunId`: the id of the TaskRun row written to Base44.
+ * - `taskRunId`: the id of the TaskRun row written to Base44. `null` when
+ *   the initial `TaskRun.create` itself failed (no audit row exists). A
+ *   non-null id means either the work, the wrapped fn, or the post-work
+ *   update is what failed — there IS a row to inspect.
  */
 export interface WithTaskRunResult<T> {
   status: 'succeeded' | 'failed' | 'partial';
-  taskRunId: string;
+  taskRunId: string | null;
   result?: T;
   error?: Error;
 }
@@ -183,16 +186,23 @@ async function updateWithRetry(
  *   - `{ result, stats }` — success with stats merged onto the TaskRun row.
  *   - `{ status: 'partial', result, stats }` — explicit partial-success.
  *
- * Errors do NOT throw out of `withTaskRun`. They are attached to the
- * returned `WithTaskRunResult.error` so caller code can choose whether to
- * re-throw or move on. This makes `withTaskRun` safe to compose inside batch
- * loops without short-circuiting siblings.
+ * Errors do NOT throw out of `withTaskRun` — at any phase. They are
+ * attached to the returned `WithTaskRunResult.error` so caller code can
+ * choose whether to re-throw or move on. This makes `withTaskRun` safe to
+ * compose inside batch loops without short-circuiting siblings. Three
+ * failure phases are possible:
  *
- * The post-work TaskRun.update call is retried up to 3 times with
- * exponential backoff (plan 15 callout — if the success update fails, the
- * task would otherwise look stuck in 'running' forever). If the retry
- * exhausts, a console.warn is emitted but the result is still returned —
- * the work itself has completed.
+ *   1. `TaskRun.create` itself fails (transient SDK / schema / auth).
+ *      Returns `{ status: 'failed', taskRunId: null, error }` — no audit
+ *      row exists in Base44.
+ *   2. The wrapped `fn` throws. Returns `{ status: 'failed', taskRunId,
+ *      error }` and the existing TaskRun row is patched to status
+ *      `'failed'` with `last_error` + `last_error_at`.
+ *   3. The wrapped `fn` succeeds but the post-work `TaskRun.update` fails
+ *      (e.g. cron lost network mid-write). Retried 3x with exponential
+ *      backoff per plan 15 — if the retry exhausts, a console.warn is
+ *      emitted but the success result is still returned (the work itself
+ *      completed; only the audit row is stale).
  */
 export async function withTaskRun<T>(
   taskRunEntity: TaskRunEntity,
@@ -223,7 +233,19 @@ export async function withTaskRun<T>(
     createPayload.triggered_by_user_id = options.triggeredByUserId;
   }
 
-  const run = await taskRunEntity.create(createPayload);
+  // Phase 1: create the TaskRun audit row. If this fails, we can't write
+  // a row at all — return a failed result with taskRunId: null so the
+  // caller can branch on it without try/catch (preserves the
+  // "never throws" contract documented above).
+  let run: TaskRunRecord;
+  try {
+    run = await taskRunEntity.create(createPayload);
+  } catch (createErr) {
+    const error = createErr instanceof Error
+      ? createErr
+      : new Error(String(createErr));
+    return { status: 'failed', taskRunId: null, error };
+  }
   const taskRunId = run.id;
 
   try {

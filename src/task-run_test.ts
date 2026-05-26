@@ -63,6 +63,7 @@ Deno.test('withTaskRun: succeeded — creates row, runs fn, updates to succeeded
   // duration_ms should be a non-negative integer-ish number.
   const dur = calls.update[0].data.duration_ms as number;
   assert(typeof dur === 'number' && dur >= 0);
+  assert(result.taskRunId !== null);
   assertEquals(rows[result.taskRunId].status, 'succeeded');
 });
 
@@ -299,7 +300,58 @@ Deno.test('withTaskRun: succeeded TaskRun row carries completed_at and duration_
     await new Promise((r) => setTimeout(r, 5));
     return 'ok';
   });
+  assert(result.taskRunId !== null);
   const row = rows[result.taskRunId];
   assert(typeof row.completed_at === 'string');
   assert(typeof row.duration_ms === 'number' && row.duration_ms >= 0);
+});
+
+// Regression: if TaskRun.create itself fails (transient SDK / schema /
+// auth), withTaskRun must NOT throw out — it must surface the error via
+// the returned result with taskRunId: null so the caller can branch
+// without try/catch (preserves the "never throws" contract).
+Deno.test('withTaskRun: TaskRun.create failure surfaces as failed result, never throws', async () => {
+  const entity: TaskRunEntity = {
+    create() {
+      return Promise.reject(new Error('schema validation failed'));
+    },
+    update() {
+      throw new Error('should not be called when create fails');
+    },
+  };
+
+  let threw = false;
+  let fnRan = false;
+  try {
+    const result = await withTaskRun(entity, 'apollo_enrich', {}, async () => {
+      fnRan = true;
+      return 'ok';
+    });
+    assertEquals(result.status, 'failed');
+    assertEquals(result.taskRunId, null);
+    assertEquals(result.error?.message, 'schema validation failed');
+    assertEquals(result.result, undefined);
+  } catch (_e) {
+    threw = true;
+  }
+  assertEquals(threw, false);
+  // The wrapped fn must not run if the audit row was never created.
+  assertEquals(fnRan, false);
+});
+
+Deno.test('withTaskRun: non-Error rejection from create is coerced to Error', async () => {
+  const entity: TaskRunEntity = {
+    create() {
+      return Promise.reject('string rejection');
+    },
+    update() {
+      throw new Error('should not be called when create fails');
+    },
+  };
+
+  const result = await withTaskRun(entity, 't', {}, async () => 'ok');
+  assertEquals(result.status, 'failed');
+  assertEquals(result.taskRunId, null);
+  assert(result.error instanceof Error);
+  assertEquals(result.error?.message, 'string rejection');
 });
