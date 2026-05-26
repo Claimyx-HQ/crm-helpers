@@ -18,9 +18,11 @@
 // settings, which change rarely and don't need cross-worker invalidation.
 
 /**
- * Canonical value-type taxonomy for the Setting entity. Order is part of
- * the contract; add new values at the END of this list so persisted rows
- * don't shift meaning.
+ * Canonical value-type taxonomy for the Setting entity. The SET of allowed
+ * string literals is the contract — Setting rows persist `value_type` as a
+ * string, so adding or removing a literal here is a coordinated change
+ * (sales-crm Setting entity definition + any consumer's runtime validation).
+ * The ORDER of literals in this union has no runtime meaning.
  *
  *   - `number`: a JSON number, validated against optional min/max.
  *   - `string`: a JSON string.

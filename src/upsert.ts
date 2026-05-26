@@ -242,6 +242,16 @@ function buildUpdatePatch<T extends { id: string }>(
  * Throws on:
  *   - Empty `options.keys` array (degenerate — caller wants a plain create).
  *   - Underlying entity SDK errors (propagated as-is).
+ *
+ * Concurrency caveat (read this if you fan out upserts in parallel):
+ *   The filter-then-create flow is inherently race-prone because Base44 has
+ *   no unique constraints (see flow-catalog research 14a). Two concurrent
+ *   callers with the same natural key can both miss the filter and both
+ *   create — producing the duplicates this helper is supposed to prevent.
+ *   For workloads where that matters (Apollo bulk sync, import batches),
+ *   serialize callers per natural-key value via a per-key mutex / queue /
+ *   batched upsertByKey wave. A periodic dedup sweep (Plan 14, M-series) is
+ *   the safety net for slips.
  */
 export async function upsertByKey<T extends { id: string }>(
   entity: UpsertEntity<T>,
@@ -259,6 +269,14 @@ export async function upsertByKey<T extends { id: string }>(
 
   // Try each key in priority order until one matches.
   for (const key of options.keys) {
+    // Skip keys whose value is nullish or empty-string — filtering on those
+    // would either match every row (if `undefined` gets stripped during JSON
+    // transport, leaving `{}`) or match rows with explicit null/empty values
+    // unintentionally. Callers should pre-filter their key list, but we
+    // defend in depth here.
+    if (key.value === undefined || key.value === null || key.value === '') {
+      continue;
+    }
     const matches = await entity.filter(
       { [key.field]: key.value },
       UPSERT_LOOKUP_SORT,

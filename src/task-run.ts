@@ -168,7 +168,10 @@ async function updateWithRetry(
       }
     }
   }
-  throw lastErr;
+  // Normalize to Error before re-throwing so the outer catch in withTaskRun
+  // always sees an `Error` instance with a stack — mirrors the convention in
+  // `withRetry` in src/base44.ts.
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 /**

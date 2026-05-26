@@ -347,6 +347,45 @@ Deno.test('upsertByKey: overwrite — null is honored as explicit clear, undefin
   assertEquals(rows.c_1.source, 'apollo');
 });
 
+// Regression: a key whose value is undefined/null/empty must NOT trigger a
+// filter call. If undefined gets dropped during JSON transport, the filter
+// would devolve into `{}` and match the first row in the table, causing an
+// incorrect update on an unrelated row.
+Deno.test('upsertByKey: skips keys with nullish/empty value, does not call filter', async () => {
+  const { entity, calls } = makeFakeEntity([
+    { id: 'c_1', domain: 'example.com', name: 'Existing' },
+  ]);
+  const result = await upsertByKey(entity, {
+    keys: [
+      { field: 'domain', value: undefined },
+      { field: 'name_normalized', value: null },
+      { field: 'source', value: '' },
+    ],
+    data: { name: 'New', source: 'apollo' },
+  });
+  // All keys were nullish — fall through to create path.
+  assertEquals(result.action, 'created');
+  // Critically: NO filter calls were issued for the nullish keys.
+  assertEquals(calls.filter.length, 0);
+  assertEquals(calls.create.length, 1);
+});
+
+Deno.test('upsertByKey: mixed nullish + valid keys — only valid keys trigger filter', async () => {
+  const { entity, calls } = makeFakeEntity([
+    { id: 'c_1', name_normalized: 'example-corp', name: null },
+  ]);
+  const result = await upsertByKey(entity, {
+    keys: [
+      { field: 'domain', value: undefined }, // skip
+      { field: 'name_normalized', value: 'example-corp' }, // valid
+    ],
+    data: { name: 'Example Corp' },
+  });
+  assertEquals(result.action, 'updated');
+  assertEquals(calls.filter.length, 1);
+  assertEquals(calls.filter[0].where.name_normalized, 'example-corp');
+});
+
 Deno.test('upsertByKey: fill_blanks — undefined incoming values are skipped (consistent with overwrite)', async () => {
   const { entity, rows, calls } = makeFakeEntity([
     { id: 'c_1', domain: 'example.com', name: null, source: null },
