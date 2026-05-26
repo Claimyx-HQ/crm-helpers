@@ -61,9 +61,21 @@ Deno.test('mergePhoneShortcuts: empty / blank shortcuts ignored', () => {
   const out = mergePhoneShortcuts([], {
     corporate_phone: '',
     home_phone: undefined,
-    other_phone: '   ', // all-whitespace → dedupKey === '' → skipped
+    other_phone: '   ', // all-whitespace → trims to '' → skipped
   });
   assertEquals(out, []);
+});
+
+Deno.test('mergePhoneShortcuts: trims surrounding whitespace on stored value', () => {
+  // Regression: previously the stored `number` preserved leading/trailing
+  // whitespace because we dedupe on the normalized form but stored the
+  // raw `String(value)`. Now `phone_numbers[]` must never carry padded
+  // values.
+  const out = mergePhoneShortcuts([], {
+    corporate_phone: '  +1 (415) 555-0000  ',
+  });
+  assertEquals(out.length, 1);
+  assertEquals(out[0].number, '+1 (415) 555-0000');
 });
 
 Deno.test('normalizeContact: captures corporate_phone / home_phone / personal_emails', () => {
@@ -140,6 +152,24 @@ Deno.test('normalizeContact: empty personal_emails defaults to []', () => {
     'stage-1',
   );
   assertEquals(lead.personal_emails, []);
+});
+
+Deno.test('normalizeContact: whitespace-only contact.phone never lands on the row', () => {
+  // Regression: the fallback chain used to pass through `contact.phone`
+  // raw, so a "   " value would propagate to NormalizedLead.phone while
+  // mergePhoneShortcuts correctly dropped it. The chain now trims each
+  // candidate and skips blanks.
+  const lead = normalizeContact(
+    {
+      first_name: 'A',
+      last_name: 'B',
+      email: 'a@b.com',
+      phone: '   ',
+    },
+    'stage-1',
+  );
+  assertEquals(lead.phone, '');
+  assertEquals(lead.phone_numbers, []);
 });
 
 Deno.test('normalizeContact: personal_emails trims, drops blanks, case-insensitive primary dedupe', () => {

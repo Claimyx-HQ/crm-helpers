@@ -272,12 +272,18 @@ export function mergePhoneShortcuts(
   for (const field of Object.keys(SHORTCUT_TO_TYPE) as Array<keyof ApolloPhoneShortcuts>) {
     const value = shortcuts[field];
     if (!value) continue;
-    const k = dedupKey(value);
+    // Trim once and reuse for both dedup and the stored number — otherwise
+    // a whitespace-padded shortcut ("  4155550000  ") would dedupe to the
+    // same key as the clean form but land in `phone_numbers[]` with the
+    // padding intact.
+    const sanitized = String(value).trim();
+    if (!sanitized) continue;
+    const k = dedupKey(sanitized);
     if (!k || seen.has(k)) continue;
     seen.add(k);
     out.push({
       type: SHORTCUT_TO_TYPE[field],
-      number: String(value),
+      number: sanitized,
       primary: false,
       status: '',
     });
@@ -1289,13 +1295,21 @@ export function normalizeContact(
     home_phone: contact.home_phone,
     other_phone: contact.other_phone,
   });
-  const fallbackPhone =
-    pickPrimary(phoneNumbers)?.number ||
-    contact.phone_numbers?.[0]?.raw_number ||
-    contact.phone_numbers?.[0]?.sanitized_number ||
-    contact.sanitized_phone ||
-    contact.phone ||
-    '';
+  // Walk the fallback chain trimming each candidate so a whitespace-only
+  // shortcut (e.g. `contact.phone === '   '`) doesn't end up on the row
+  // — `mergePhoneShortcuts` already drops blanks from `phone_numbers[]`,
+  // so the legacy `phone` column needs the same guard for consistency.
+  const fallbackPhone = (
+    [
+      pickPrimary(phoneNumbers)?.number,
+      contact.phone_numbers?.[0]?.raw_number,
+      contact.phone_numbers?.[0]?.sanitized_number,
+      contact.sanitized_phone,
+      contact.phone,
+    ]
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .find((v) => v.length > 0)
+  ) || '';
   // Trim entries, drop blanks, and case-insensitively exclude the primary
   // `contact.email` so the array never carries the same address twice in
   // different casings. De-dupe across the array itself by the same lowercase
